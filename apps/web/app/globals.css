@@ -15,3 +15,46 @@
 @media(max-width:650px){.server-status-notice{align-items:flex-start;flex-direction:column;gap:12px;padding:15px}.server-status-notice>div{font-size:11px}.pending-upload-row{flex-wrap:wrap}.pending-upload-row>.button{font-size:8px}.pending-upload-row>div{flex-basis:55%}.transfer-status{max-width:90px}.settings-button-row .button{font-size:9px}.storage-choice{padding:15px}.transfer-progress{margin-top:9px}}
 .auth-start-over{margin:17px auto 0;text-align:center;justify-content:center}.duplicate-options{display:flex;gap:10px;flex-wrap:wrap}.duplicate-options .button{flex:1;min-width:160px}
 .recovery-status{display:flex;align-items:center;gap:12px;margin-bottom:20px;border:1px solid #e1ead5;background:#f4f8eb;border-radius:9px;padding:15px;color:#7d9665}.recovery-status>div{flex:1}.recovery-status strong{display:block;font-size:11px;font-weight:500}.recovery-status span{font-size:10px;line-height:1.7;display:block;margin-top:5px;color:#8fa179}
+
+/* Transfer Progress & Dock Enhancements */
+.transfer-progress-wrap{margin-top:10px;max-width:440px}
+.transfer-progress-meta{display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#7e8f72;margin-top:5px}
+.transfer-progress-meta strong{color:#38543b;font-weight:600}
+.transfer-type{position:relative}
+.transfer-direction-badge{position:absolute;bottom:-3px;right:-3px;width:16px;height:16px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:9px}
+.transfer-direction-badge.upload{background:#457d59}
+.transfer-direction-badge.download{background:#3b7596}
+
+/* Floating Transfer Progress Dock */
+.transfer-dock{position:fixed;right:24px;bottom:24px;width:360px;max-width:calc(100vw - 32px);background:#ffffff;border:1px solid #d9e3d0;border-radius:12px;box-shadow:0 12px 35px rgba(35,53,30,0.18);z-index:90;overflow:hidden;transition:all .25s ease}
+.transfer-dock.minimized .transfer-dock-body{display:none}
+.transfer-dock-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f2f6ec;border-bottom:1px solid #e5ecd9;font-size:12px;color:#354d36}
+.transfer-dock-title{display:flex;align-items:center;gap:9px}
+.transfer-dock-title strong{font-size:12px;font-weight:600;color:#2b422e}
+.transfer-dock-actions{display:flex;align-items:center;gap:4px}
+.transfer-dock-actions .icon-button{width:26px;height:26px}
+.transfer-dock-body{padding:8px 14px 12px;max-height:270px;overflow-y:auto;background:#ffffff}
+.transfer-dock-list{display:flex;flex-direction:column;gap:10px}
+.transfer-dock-item{display:flex;align-items:center;gap:11px;padding:8px 0;border-bottom:1px solid #f1f4eb}
+.transfer-dock-item:last-child{border-bottom:none}
+.transfer-dock-item-icon{position:relative;width:34px;height:34px;border-radius:8px;background:#edf3e5;display:grid;place-items:center;color:#5a754d;flex-shrink:0}
+.transfer-dock-item-info{flex:1;min-width:0}
+.transfer-dock-item-name{font-size:11px;font-weight:600;color:#3b4e39;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.transfer-dock-progress-track{height:5px;background:#e7eedf;border-radius:6px;margin:6px 0 4px;overflow:hidden}
+.transfer-dock-progress-fill{height:100%;background:linear-gradient(90deg,#5f996d,#82b879);border-radius:6px;transition:width .2s ease}
+.transfer-dock-progress-fill.completed{background:#418255}
+.transfer-dock-item-meta{display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#85967b}
+.transfer-dock-item-meta strong{color:#405f3b}
+.transfer-dock-item-action{flex-shrink:0}
+.transfer-dock-item-action .icon-button{width:24px;height:24px;color:#9baa90}
+.transfer-dock-item-action .icon-button:hover{color:#b34d4d;background:#faecec}
+.transfer-dock-footer{margin-top:8px;padding-top:8px;border-top:1px solid #edf1e6;text-align:right}
+.transfer-dock-footer .text-button{font-size:11px;font-weight:600;color:#3c5d38;margin-left:auto}
+.text-green{color:#457d59}
+
+/* Preview Modal Media Loading */
+.preview-loading-card{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:35px 25px;text-align:center;gap:10px;color:#6d845e}
+.preview-loading-card strong{font-size:16px;color:#345037;font-weight:600}
+.preview-loading-card p{font-size:11px;color:#849676;margin:0}
+.preview-progress-track{width:240px;max-width:85%;height:6px;background:#e1e9d7;border-radius:6px;overflow:hidden;margin:6px 0}
+.preview-progress-fill{height:100%;background:linear-gradient(90deg,#528d61,#7cb575);border-radius:6px;transition:width .2s}

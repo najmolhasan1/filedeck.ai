@@ -425,19 +425,48 @@ export class TelegramBrowserGateway {
     return { transfer, file: driveFile };
   }
 
-  public async downloadFile(remoteMessageId: number, onProgress?: (progress: number) => void): Promise<Blob> {
+  public async downloadFile(
+    remoteMessageId: number,
+    optionsOrProgress?:
+      | ((progress: number, downloaded?: number, total?: number) => void)
+      | { signal?: AbortSignal; onProgress?: (progress: number, downloaded?: number, total?: number) => void }
+  ): Promise<Blob> {
+    const onProgress = typeof optionsOrProgress === 'function' ? optionsOrProgress : optionsOrProgress?.onProgress;
+    const signal = typeof optionsOrProgress === 'object' ? optionsOrProgress?.signal : undefined;
+
+    if (signal?.aborted) throw new Error('Download cancelled');
+
     const client = await this.getClient();
     const messages = await client.getMessages('me', { ids: [remoteMessageId] });
     if (!messages || messages.length === 0 || !messages[0].media) {
       throw new Error('File message no longer exists in Telegram Saved Messages.');
     }
     const message = messages[0];
+
+    const toNum = (val: unknown): number => {
+      if (typeof val === 'number') return val;
+      if (typeof val === 'bigint') return Number(val);
+      if (val && typeof val === 'object' && 'toJSNumber' in val && typeof (val as { toJSNumber: () => number }).toJSNumber === 'function') {
+        return (val as { toJSNumber: () => number }).toJSNumber();
+      }
+      const str = String(val || '0');
+      const n = Number(str);
+      return Number.isFinite(n) ? n : 0;
+    };
+
     const buffer = await client.downloadMedia(message, {
-      progressCallback: onProgress ? (downloaded: unknown, total: unknown) => {
-        if (typeof total === 'number' && total > 0 && typeof downloaded === 'number') {
-          onProgress(downloaded / total);
+      progressCallback: (downloaded: unknown, total: unknown) => {
+        if (signal?.aborted) throw new Error('Download cancelled');
+        if (onProgress) {
+          const d = toNum(downloaded);
+          const t = toNum(total);
+          if (t > 0) {
+            onProgress(Math.min(1, Math.max(0, d / t)), d, t);
+          } else if (d > 0) {
+            onProgress(0, d, 0);
+          }
         }
-      } : undefined,
+      },
     });
     if (!buffer) {
       throw new Error('Failed to download media bytes.');

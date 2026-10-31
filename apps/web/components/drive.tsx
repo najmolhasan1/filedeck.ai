@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Cloud, CloudUpload, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Plus, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Star, Tag, Trash2, Upload, Wifi, X } from 'lucide-react';
+import { Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Cloud, CloudUpload, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Plus, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Star, Tag, Trash2, Upload, Wifi, X } from 'lucide-react';
 import { canMoveFolder, Catalog, DriveFile, FileKind, Folder, Transfer, formatBytes, initialCatalog, kindFor, MAX_FILE_BYTES, safePreview } from '@/lib/catalog';
 import { commitCatalog, getOriginal, loadCatalog, saveOriginal } from '@/lib/storage';
 import { APIError, ServerGateway, type ServerUser, type UploadDescriptor } from '@/lib/server';
@@ -62,6 +62,10 @@ export default function Drive() {
   const [preview,setPreview]=useState<DriveFile|null>(null);
   const [previewUrl,setPreviewUrl]=useState<string|null>(null);
   const [previewError,setPreviewError]=useState('');
+  const [previewProgress,setPreviewProgress]=useState<number|null>(null);
+  const [previewBytes,setPreviewBytes]=useState<{current:number;total:number}|null>(null);
+  const [dockOpen,setDockOpen]=useState(true);
+  const [dismissedDock,setDismissedDock]=useState(false);
   const [toast,setToast]=useState('');
   const [mobileNav,setMobileNav]=useState(false);
   const [menu,setMenu]=useState<string|null>(null);
@@ -198,7 +202,7 @@ export default function Drive() {
   },[]);
   useEffect(()=>{
     if(!preview)return;let disposed=false;let localUrl:string|undefined;
-    setPreviewUrl(null);setPreviewError('');
+    setPreviewUrl(null);setPreviewError('');setPreviewProgress(null);setPreviewBytes(null);
     (async()=>{
       if (thumbnailCache.has(preview.id)) {
         if (!disposed) setPreviewUrl(thumbnailCache.get(preview.id)!);
@@ -216,7 +220,16 @@ export default function Drive() {
           if (!disposed) setPreviewUrl('unsupported');
           return;
         }
-        const blob = await telegramGateway.downloadFile(preview.remoteMessageId);
+        const blob = await telegramGateway.downloadFile(preview.remoteMessageId, {
+          onProgress: (ratio, downloaded, total) => {
+            if (!disposed) {
+              setPreviewProgress(Math.round(ratio * 100));
+              if (downloaded && total) {
+                setPreviewBytes({ current: downloaded, total });
+              }
+            }
+          }
+        });
         if (!disposed) {
           void saveOriginal(preview.id, blob);
           localUrl = URL.createObjectURL(blob);
@@ -283,30 +296,112 @@ export default function Drive() {
   const download=async(file:DriveFile)=>{
     try{
       if(file.remoteMessageId){
-        notify(t('Downloading original from Telegram…','টেলিগ্রাম থেকে মূল ফাইল ডাউনলোড হচ্ছে…'));
-        const blob=await telegramGateway.downloadFile(file.remoteMessageId);
+        const transferId=crypto.randomUUID();
+        const controller=new AbortController();
+        controllers.current.set(transferId,controller);
+        setDismissedDock(false);
+        setDockOpen(true);
+
+        const transferItem:Transfer={
+          id:transferId,
+          name:file.name,
+          bytes:file.bytes,
+          stageBytes:0,
+          status:'saving',
+          direction:'download',
+          kind:file.kind,
+          createdAt:new Date().toISOString()
+        };
+
+        catalogRef.current={
+          ...catalogRef.current,
+          transfers:[transferItem,...catalogRef.current.transfers.filter(t=>t.id!==transferId)]
+        };
+        renderCatalog(catalogRef.current);
+
+        notify(t(`Downloading “${file.name}”…`,`“${file.name}” ডাউনলোড হচ্ছে…`));
+
+        const blob=await telegramGateway.downloadFile(file.remoteMessageId,{
+          signal:controller.signal,
+          onProgress:(ratio,downloaded,total)=>{
+            const currentBytes=downloaded||Math.round(ratio*file.bytes);
+            const totalBytes=total||file.bytes;
+            const updatedTransfer:Transfer={
+              ...transferItem,
+              stageBytes:currentBytes,
+              bytes:totalBytes,
+              status:ratio>=1?'completed':'saving'
+            };
+            catalogRef.current={
+              ...catalogRef.current,
+              transfers:catalogRef.current.transfers.map(item=>item.id===transferId?updatedTransfer:item)
+            };
+            renderCatalog(catalogRef.current);
+          }
+        });
+
         downloadBlob(blob,file.name);
-        notify(t('Download completed.','ডাউনলোড সম্পন্ন হয়েছে।'));
+
+        const finishedTransfer:Transfer={
+          ...transferItem,
+          stageBytes:file.bytes,
+          status:'completed'
+        };
+        catalogRef.current={
+          ...catalogRef.current,
+          transfers:catalogRef.current.transfers.map(item=>item.id===transferId?finishedTransfer:item)
+        };
+        renderCatalog(catalogRef.current);
+        notify(t(`“${file.name}” downloaded.`,`“${file.name}” ডাউনলোড সম্পন্ন হয়েছে।`));
         return;
       }
       if(file.source==='server'){const a=document.createElement('a');a.href=gateway.contentUrl(file.id);a.download=file.name;a.click();notify(t('Original download requested.','মূল ফাইল ডাউনলোডের অনুরোধ করা হয়েছে।'));return;}
       const blob=file.asset?await fetch(file.asset).then(response=>{if(!response.ok)throw new Error();return response.blob();}):await getOriginal(file.originalId||file.id);if(!blob)throw new Error();downloadBlob(blob,file.name);notify(t('Original download started.','মূল ফাইল ডাউনলোড শুরু হয়েছে।'));
-    }catch{notify(t('The original is unavailable.','মূল ফাইল পাওয়া যাচ্ছে না।'));}finally{setMenu(null);}
+    }catch(err:unknown){
+      const msg=err instanceof Error?err.message:'The original is unavailable.';
+      notify(msg==='Download cancelled'?t('Download cancelled.','ডাউনলোড বাতিল করা হয়েছে।'):msg);
+    }finally{setMenu(null);}
   };
   const upload=async(list:FileList|File[])=>{
     const files=Array.from(list);if(!files.length||!readyRef.current)return;
     if(!serverMode && account?.telegram_connected){
+      setDismissedDock(false);
+      setDockOpen(true);
       for(const file of files){
         const id=crypto.randomUUID();
-        const transfer:Transfer={id,name:file.name,bytes:file.size,status:'saving',createdAt:new Date().toISOString(),stageBytes:0,providerBytes:0};
+        const controller=new AbortController();
+        controllers.current.set(id,controller);
+
+        const transfer:Transfer={
+          id,
+          name:file.name,
+          bytes:file.size,
+          status:'saving',
+          direction:'upload',
+          kind:kindFor(file.type||'',file.name),
+          createdAt:new Date().toISOString(),
+          stageBytes:0,
+          providerBytes:0
+        };
         const next={...catalogRef.current,transfers:[transfer,...catalogRef.current.transfers]};
         catalogRef.current=next;renderCatalog(next);
         try{
-          const result=await telegramGateway.upload(file,{folderId,onProgress:(p)=>{
-            const updatedTransfer:Transfer={...transfer,stageBytes:p.bytes,status:p.phase==='queued'?'completed':'saving'};
-            const updated={...catalogRef.current,transfers:catalogRef.current.transfers.map(item=>item.id===id?updatedTransfer:item)};
-            catalogRef.current=updated;renderCatalog(updated);
-          }});
+          const result=await telegramGateway.upload(file,{
+            folderId,
+            signal:controller.signal,
+            onProgress:(p)=>{
+              const updatedTransfer:Transfer={
+                ...transfer,
+                stageBytes:p.bytes,
+                bytes:p.expectedBytes||file.size,
+                status:p.phase==='queued'?'completed':'saving',
+                direction:'upload',
+                kind:kindFor(file.type||'',file.name)
+              };
+              const updated={...catalogRef.current,transfers:catalogRef.current.transfers.map(item=>item.id===id?updatedTransfer:item)};
+              catalogRef.current=updated;renderCatalog(updated);
+            }
+          });
           if(file.type.startsWith('image/')){
             try {
               const localUrl = URL.createObjectURL(file);
@@ -314,14 +409,23 @@ export default function Drive() {
             } catch {}
           }
           void saveOriginal(result.file.id, file);
-          const updatedCatalog={...catalogRef.current,files:[result.file,...catalogRef.current.files.filter(f=>f.id!==result.file.id)],transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'completed' as const}:item)};
+          const updatedCatalog={
+            ...catalogRef.current,
+            files:[result.file,...catalogRef.current.files.filter(f=>f.id!==result.file.id)],
+            transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'completed' as const,stageBytes:file.size}:item)
+          };
           catalogRef.current=updatedCatalog;renderCatalog(updatedCatalog);
           notify(t(`“${file.name}” uploaded to your Telegram Saved Messages.`,`“${file.name}” আপনার টেলিগ্রাম সেভড মেসেজে আপলোড হয়েছে।`));
         }catch(err:unknown){
           const msg=err instanceof Error?err.message:'Upload failed';
-          const failed={...catalogRef.current,transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'failed' as const,error:msg}:item)};
+          const failed={
+            ...catalogRef.current,
+            transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:msg.includes('cancelled')?('cancelled' as const):('failed' as const),error:msg}:item)
+          };
           catalogRef.current=failed;renderCatalog(failed);
-          notify(msg);
+          notify(msg.includes('cancelled')?t('Upload cancelled.','আপলোড বাতিল করা হয়েছে।'):msg);
+        }finally{
+          controllers.current.delete(id);
         }
       }
       if(fileInput.current)fileInput.current.value='';
@@ -474,10 +578,21 @@ export default function Drive() {
   const pageTitle=currentFolder?.name||t(...viewLabels[view]);
   const isDefault=view==='all'&&!folderId&&!search;
   const transferLabel=(item:Transfer)=>{
-    if(!serverMode)return item.status==='completed'?t('Saved locally','ব্রাউজারে সেভ'):item.status==='failed'?t('Needs attention','মনোযোগ প্রয়োজন'):item.status==='cancelled'?t('Cancelled','বাতিল'):t('Saving','সেভ হচ্ছে');
+    if(!serverMode){
+      if(item.direction==='download'){
+        return item.status==='completed'?t('Download completed','ডাউনলোড সম্পন্ন'):item.status==='failed'?t('Download failed','ডাউনলোড ব্যর্থ'):item.status==='cancelled'?t('Download cancelled','ডাউনলোড বাতিল'):t('Downloading from Telegram…','টেলিগ্রাম থেকে ডাউনলোড হচ্ছে…');
+      }
+      if(account?.telegram_connected){
+        return item.status==='completed'?t('Confirmed in Telegram','টেলিগ্রামে নিশ্চিত'):item.status==='failed'?t('Upload failed','আপলোড ব্যর্থ'):item.status==='cancelled'?t('Cancelled','বাতিল'):t('Uploading to Telegram…','টেলিগ্রামে আপলোড হচ্ছে…');
+      }
+      return item.status==='completed'?t('Saved locally','ব্রাউজারে সেভ'):item.status==='failed'?t('Needs attention','মনোযোগ প্রয়োজন'):item.status==='cancelled'?t('Cancelled','বাতিল'):t('Saving','সেভ হচ্ছে');
+    }
     const labels:Record<string,[string,string]>={PREPARING:['Checking original bytes','মূল ফাইল যাচাই হচ্ছে'],CREATED:['Ready to upload','আপলোডের জন্য প্রস্তুত'],STAGING:['Uploading to the service','সার্ভারে আপলোড হচ্ছে'],STAGED:['Original received','মূল ফাইল গ্রহণ হয়েছে'],QUEUED:['Queued for Telegram','টেলিগ্রামের অপেক্ষায়'],SENDING:['Sending to Telegram','টেলিগ্রামে পাঠানো হচ্ছে'],VERIFYING:['Verifying upload','আপলোড যাচাই হচ্ছে'],RECONCILING:['Verifying an uncertain result','অনিশ্চিত ফলাফল যাচাই হচ্ছে'],WAITING_PROVIDER:['Waiting for Telegram','টেলিগ্রামের অপেক্ষায়'],WAITING_NETWORK:['Waiting for network','নেটওয়ার্কের অপেক্ষায়'],RETRY_SCHEDULED:['Retry scheduled','পুনরায় চেষ্টার সময় নির্ধারিত'],CANCEL_REQUESTED:['Cancellation requested','বাতিলের অনুরোধ হয়েছে'],CANCELLED:['Cancelled','বাতিল'],COMPLETED:['Confirmed in Telegram','টেলিগ্রামে নিশ্চিত হয়েছে'],FAILED:['Needs attention','মনোযোগ প্রয়োজন'],NEEDS_ATTENTION:['Needs attention','মনোযোগ প্রয়োজন']};
     return labels[item.state||'']?t(...labels[item.state||'']):t('Checking transfer status','ট্রান্সফারের অবস্থা যাচাই হচ্ছে');
   };
+  const activeTransfers=catalog.transfers.filter(item=>!['completed','cancelled','failed'].includes(item.status));
+  const recentFinishedTransfers=catalog.transfers.filter(item=>['completed','failed'].includes(item.status)).slice(0,3);
+  const showDock=!dismissedDock&&(activeTransfers.length>0||recentFinishedTransfers.length>0);
   return <div className="app-shell" onDragEnter={event=>{if(event.dataTransfer.types.includes('Files')){event.preventDefault();draggingDepth.current++;setDragging(true);}}} onDragLeave={event=>{event.preventDefault();if(--draggingDepth.current<=0){setDragging(false);draggingDepth.current=0;}}} onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();setDragging(false);draggingDepth.current=0;upload(event.dataTransfer.files);}}>
     {dialog?.type==='settings'&&!serverMode&&<input ref={importInput} type="file" accept="application/json,.json" hidden aria-label="Import catalog JSON" onChange={event=>{const file=event.target.files?.[0];if(file)prepareImport(file);}}/>}
     <input ref={fileInput} type="file" multiple hidden onChange={event=>{if(event.target.files)upload(event.target.files);}} aria-label="Upload files"/>
@@ -505,18 +620,31 @@ export default function Drive() {
         {(view==='all'&&(displayedFolders.length>0||!search))&&<section className="folders-section"><div className="section-heading"><h2>{currentFolder?t('Folders','ফোল্ডার'):t('Your folders','আপনার ফোল্ডার')}<span>{displayedFolders.length.toString().padStart(2,'0')}</span></h2><button className="text-button" onClick={()=>openDialog({type:'new-folder'})}><Plus size={14}/>{t('Create new','নতুন তৈরি')}</button></div><div className="folder-grid">{displayedFolders.map(folder=><div className={`folder-card ${folder.color}`} key={folder.id}><button className="folder-open" onClick={()=>navigate('all',folder.id)}><div className="folder-card-icon"><FolderIcon size={29} strokeWidth={1.2} fill="currentColor"/><span><FolderIcon size={29} strokeWidth={1.2} fill="currentColor"/></span></div><strong>{folder.name}</strong><span>{activeFiles.filter(file=>file.folderId===folder.id).length} {t('files','ফাইল')}<span className="folder-size">{formatBytes(activeFiles.filter(file=>file.folderId===folder.id).reduce((sum,file)=>sum+file.bytes,0))}</span></span></button><button className="folder-menu icon-button" aria-label={`Manage ${folder.name}`} onClick={()=>openDialog({type:'folder',folder})}><Ellipsis size={18}/></button><span className="folder-corner"><ArrowRight size={15}/></span></div>)}</div></section>}
         {view==='transfers'?<section className="files-section">
           <div className="section-heading"><h2>{t('Transfer activity','ট্রান্সফারের অবস্থা')}<span>{transfers.length}</span></h2><button className="text-button" onClick={clearFinished}>{t('Clear finished','সম্পন্নগুলো সরান')}</button></div>
-          <div className="local-notice"><Info size={17}/>{serverMode?t('An upload is complete only after Telegram confirms its message. Received bytes and queued transfers are still in progress.','টেলিগ্রাম মেসেজ নিশ্চিত করার পরই আপলোড সম্পন্ন হয়। বাইট গ্রহণ বা কিউতে থাকা মানে কাজ এখনো চলছে।'):t('Demo transfers save original files in this browser. They are not uploaded to Telegram.','ডেমো ট্রান্সফার মূল ফাইল এই ব্রাউজারে সেভ করে। টেলিগ্রামে আপলোড হয় না।')}</div>
+          <div className="local-notice"><Info size={17}/>{serverMode?t('An upload is complete only after Telegram confirms its message. Received bytes and queued transfers are still in progress.','টেলিগ্রাম মেসেজ নিশ্চিত করার পরই আপলোড সম্পন্ন হয়। বাইট গ্রহণ বা কিউতে থাকা মানে কাজ এখনো চলছে।'):t('Transfers connect directly to Telegram MTProto over WebSockets. Originals are stored directly in your Saved Messages.','ট্রান্সফার ব্রাউজার থেকে সরাসরি টেলিগ্রাম MTProto ওয়েবসকেটে সংযুক্ত। আপনার সেভড মেসেজে ফাইল সংরক্ষিত হয়।')}</div>
           {pendingUploads.length>0&&<div className="pending-uploads"><h3>{t('Uploads you can resume','যে আপলোডগুলো চালিয়ে যেতে পারবেন')}</h3><p>{t('Choose the same original file. Its bytes are checked before continuing from the server’s verified offset.','একই মূল ফাইল বেছে নিন। সার্ভারের যাচাই করা অবস্থান থেকে চালানোর আগে ফাইলের বাইট পরীক্ষা করা হবে।')}</p>{pendingUploads.map(item=><div key={item.id} className="pending-upload-row"><div><strong>{item.name}</strong><span>{formatBytes(item.offset)} / {formatBytes(item.bytes)}</span></div><button className="button button-light" onClick={()=>{resumeTarget.current=item.id;fileInput.current?.click();}}>{t('Choose original & resume','মূল ফাইল বেছে চালিয়ে যান')}</button><button className="icon-button" aria-label={`Cancel ${item.name}`} onClick={()=>{if(item.uploadId)cancelTransfer(item.uploadId);else{gateway.discardUpload(item.id);setPendingUploads(gateway.pendingUploads());}}}><X size={16}/></button></div>)}</div>}
-          {transfers.length?transfers.map(item=><div className="transfer-row" key={item.id}>
-            <div className="transfer-type"><File size={22}/></div>
-            <div className="transfer-info"><strong>{item.name}</strong><span>{formatBytes(item.bytes)} · {serverMode?transferLabel(item):item.status==='completed'?t('Saved in this browser','এই ব্রাউজারে সেভ হয়েছে'):item.status==='saving'?t('Saving original…','মূল ফাইল সেভ হচ্ছে…'):item.status==='cancelled'?t('Cancelled','বাতিল'):item.error}</span>
-              {serverMode&&item.status!=='completed'&&item.status!=='cancelled'&&<><div className="transfer-progress"><span style={{width:`${Math.min(100,((item.stagedBytes??item.stageBytes??0)/Math.max(1,item.bytes))*100)}%`}}/></div><span>{formatBytes(item.stagedBytes??item.stageBytes??0)} / {formatBytes(item.bytes)} {t('received by service','সার্ভারে গ্রহণ হয়েছে')}{item.error?` · ${item.error}`:''}{item.retryAfterSeconds?` · ${t('Retry after','আবার চেষ্টা করুন')} ${item.retryAfterSeconds}s`:''}</span></>}
-            </div>
-            <span className={`transfer-status ${item.status}`}>{item.status==='completed'?<CheckCheck size={18}/>:!['failed','cancelled'].includes(item.status)?<LoaderCircle size={18} className="spin"/>:<Info size={18}/>}<span>{transferLabel(item)}</span></span>
-            {serverMode&&controllers.current.has(item.id)&&<button className="button button-light" onClick={()=>pauseTransfer(item.id)}>{t('Pause','বিরতি')}</button>}
-            {!['completed','cancelled','failed'].includes(item.status)&&<button className="icon-button" aria-label="Cancel transfer" onClick={()=>cancelTransfer(item.id)}><X size={18}/></button>}
-            {item.status==='failed'&&<button className="button button-light" onClick={()=>serverMode?retryTransfer(item.id):fileInput.current?.click()}>{serverMode?t('Retry safely','আবার চেষ্টা'):t('Choose file again','ফাইল আবার বেছে নিন')}</button>}
-          </div>):<Empty icon={<ArrowUpFromLine size={30}/>} title={t('A clear runway','সব প্রস্তুত')} text={t('Your uploads will appear here, with every step in view.','আপলোডের প্রতিটি ধাপ এখানে দেখা যাবে।')} action={t('Upload your first file','প্রথম ফাইল আপলোড করুন')} onAction={()=>fileInput.current?.click()}/>}
+          {transfers.length?transfers.map(item=>{
+            const progressBytes=item.stagedBytes??item.stageBytes??(item.status==='completed'?item.bytes:0);
+            const progressPct=Math.min(100,Math.round((progressBytes/Math.max(1,item.bytes))*100));
+            const isActive=!['completed','cancelled','failed'].includes(item.status);
+            const isDownload=item.direction==='download';
+            return <div className="transfer-row" key={item.id}>
+              <div className="transfer-type">
+                <TypeIcon kind={item.kind||kindFor('',item.name)} size={22}/>
+                <span className={`transfer-direction-badge ${isDownload?'download':'upload'}`} title={isDownload?t('Download','ডাউনলোড'):t('Upload','আপলোড')}>
+                  {isDownload?<ArrowDown size={10}/>:<ArrowUp size={10}/>}
+                </span>
+              </div>
+              <div className="transfer-info">
+                <strong>{item.name}</strong>
+                <span>{formatBytes(item.bytes)} · {transferLabel(item)}</span>
+                {isActive&&<div className="transfer-progress-wrap"><div className="transfer-progress"><span style={{width:`${progressPct}%`}}/></div><div className="transfer-progress-meta"><span>{formatBytes(progressBytes)} / {formatBytes(item.bytes)}</span><strong>{progressPct}%</strong></div></div>}
+              </div>
+              <span className={`transfer-status ${item.status}`}>{item.status==='completed'?<CheckCheck size={18}/>:isActive?<LoaderCircle size={18} className="spin"/>:<Info size={18}/>}<span>{isActive?`${progressPct}% · ${transferLabel(item)}`:transferLabel(item)}</span></span>
+              {serverMode&&controllers.current.has(item.id)&&<button className="button button-light" onClick={()=>pauseTransfer(item.id)}>{t('Pause','বিরতি')}</button>}
+              {isActive&&<button className="icon-button" aria-label="Cancel transfer" onClick={()=>cancelTransfer(item.id)}><X size={18}/></button>}
+              {item.status==='failed'&&<button className="button button-light" onClick={()=>serverMode?retryTransfer(item.id):fileInput.current?.click()}>{serverMode?t('Retry safely','আবার চেষ্টা'):t('Choose file again','ফাইল আবার বেছে নিন')}</button>}
+            </div>;
+          }):<Empty icon={<ArrowUpFromLine size={30}/>} title={t('A clear runway','সব প্রস্তুত')} text={t('Your uploads and downloads will appear here, with real-time progress.','আপনার আপলোড ও ডাউনলোডের রিয়েল-টাইম অগ্রগতি এখানে দেখা যাবে।')} action={t('Upload your first file','প্রথম ফাইল আপলোড করুন')} onAction={()=>fileInput.current?.click()}/>}
         </section>:<section className="files-section"><div className="file-toolbar">
 <div className="section-heading"><h2>{search?t('Matching files','মিলে যাওয়া ফাইল'):view==='all'?t('All files','সব ফাইল'):t(...viewLabels[view])}<span>{visible.length.toString().padStart(2,'0')}</span></h2></div><div className="file-controls"><button className={`button button-light filter-button ${filters?'control-active':''}`} onClick={()=>setFilters(!filters)}><SlidersHorizontal size={15}/>{t('Filters','ফিল্টার')}{(kind!=='all'||dateFilter!=='all')&&<span className="filter-dot"/>}</button><label className="sort-control"><span className="sr-only">Sort files</span><select value={sort} onChange={event=>setSort(event.target.value)}><option value="recent">{t('Last added','সর্বশেষ যোগ')}</option><option value="name">{t('Name A–Z','নাম A–Z')}</option><option value="size">{t('Largest first','বড় ফাইল আগে')}</option></select><ChevronDown size={14}/></label><div className="view-toggle"><button className={layout==='grid'?'active':''} onClick={()=>setLayout('grid')} aria-label="Grid view" aria-pressed={layout==='grid'}><Grid2X2 size={16}/></button><button className={layout==='list'?'active':''} onClick={()=>setLayout('list')} aria-label="List view" aria-pressed={layout==='list'}><List size={17}/></button></div></div></div>
         {filters&&<div className="filter-panel"><label>{t('File type','ফাইলের ধরন')}<select value={kind} onChange={event=>setKind(event.target.value)}><option value="all">{t('All types','সব ধরনের')}</option><option value="image">{t('Images','ছবি')}</option><option value="document">{t('Documents','ডকুমেন্ট')}</option><option value="video">{t('Videos','ভিডিও')}</option><option value="audio">{t('Audio','অডিও')}</option></select></label><label>{t('Date added','যোগ করার তারিখ')}<select value={dateFilter} onChange={event=>setDateFilter(event.target.value)}><option value="all">{t('Any time','যেকোনো সময়')}</option><option value="7">{t('Last 7 days','গত ৭ দিন')}</option><option value="30">{t('Last 30 days','গত ৩০ দিন')}</option></select></label><button className="text-button" onClick={()=>{setKind('all');setDateFilter('all');}}>{t('Reset filters','ফিল্টার রিসেট')}</button></div>}
@@ -528,6 +656,75 @@ export default function Drive() {
       </main>
     </div>
     {dragging&&<div className="drop-overlay"><div><CloudUpload size={58}/><h2>{t('Drop it like it’s home.','আপনার ফাইল এখানে ছেড়ে দিন।')}</h2><p>{serverMode?t('Original files. Up to 500 MiB each. Telegram confirms every completed upload.','মূল ফাইল। প্রতিটি সর্বোচ্চ ৫০০ MiB। টেলিগ্রাম প্রতিটি সম্পন্ন আপলোড নিশ্চিত করে।'):t('Original files. Up to 500 MiB each. Saved in this browser demo.','মূল ফাইল। প্রতিটি সর্বোচ্চ ৫০০ MiB। এই ডেমো ব্রাউজারে সেভ হবে।')}</p></div></div>}
+    {showDock && (
+      <aside className={`transfer-dock ${dockOpen ? '' : 'minimized'}`} aria-label={t('Transfers','স্থানান্তর')}>
+        <div className="transfer-dock-header">
+          <div className="transfer-dock-title">
+            {activeTransfers.length > 0 ? <LoaderCircle size={15} className="spin text-green"/> : <CheckCheck size={15} className="text-green"/>}
+            <strong>
+              {activeTransfers.length > 0
+                ? t(`${activeTransfers.length} active transfer(s)`,`${activeTransfers.length}টি স্থানান্তর চলছে`)
+                : t('Transfers completed','স্থানান্তর সম্পন্ন')}
+            </strong>
+          </div>
+          <div className="transfer-dock-actions">
+            <button className="icon-button" onClick={()=>setDockOpen(!dockOpen)} aria-label={dockOpen ? 'Minimize' : 'Expand'}>
+              <ChevronDown size={14} style={{transform: dockOpen ? 'none' : 'rotate(180deg)', transition: 'transform .2s'}}/>
+            </button>
+            <button className="icon-button" onClick={()=>setDismissedDock(true)} aria-label="Close transfer dock">
+              <X size={14}/>
+            </button>
+          </div>
+        </div>
+        {dockOpen && (
+          <div className="transfer-dock-body">
+            <div className="transfer-dock-list">
+              {[...activeTransfers, ...recentFinishedTransfers].slice(0, 4).map(item => {
+                const progressBytes = item.stagedBytes ?? item.stageBytes ?? (item.status === 'completed' ? item.bytes : 0);
+                const progressPct = Math.min(100, Math.round((progressBytes / Math.max(1, item.bytes)) * 100));
+                const isActive = !['completed', 'cancelled', 'failed'].includes(item.status);
+                const isDownload = item.direction === 'download';
+                return (
+                  <div className="transfer-dock-item" key={item.id}>
+                    <div className="transfer-dock-item-icon">
+                      <TypeIcon kind={item.kind || kindFor('', item.name)} size={16}/>
+                      <span className={`transfer-direction-badge ${isDownload ? 'download' : 'upload'}`}>
+                        {isDownload ? <ArrowDown size={8}/> : <ArrowUp size={8}/>}
+                      </span>
+                    </div>
+                    <div className="transfer-dock-item-info">
+                      <div className="transfer-dock-item-name" title={item.name}>{item.name}</div>
+                      <div className="transfer-dock-progress-track">
+                        <div
+                          className={`transfer-dock-progress-fill ${item.status === 'completed' ? 'completed' : ''}`}
+                          style={{width: `${item.status === 'completed' ? 100 : progressPct}%`}}
+                        />
+                      </div>
+                      <div className="transfer-dock-item-meta">
+                        <span>{formatBytes(progressBytes)} / {formatBytes(item.bytes)}</span>
+                        <strong>{item.status === 'completed' ? (item.direction === 'download' ? t('Downloaded','ডাউনলোড সম্পন্ন') : t('Uploaded','আপলোড সম্পন্ন')) : `${progressPct}%`}</strong>
+                      </div>
+                    </div>
+                    {isActive && (
+                      <div className="transfer-dock-item-action">
+                        <button className="icon-button" onClick={()=>cancelTransfer(item.id)} aria-label={`Cancel ${item.name}`} title="Cancel">
+                          <X size={13}/>
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div className="transfer-dock-footer">
+              <button className="text-button" onClick={()=>{navigate('transfers');setDockOpen(true);}}>
+                {t('View all transfers →','সব স্থানান্তর দেখুন →')}
+              </button>
+            </div>
+          </div>
+        )}
+      </aside>
+    )}
     {toast&&<div className="toast" role="status"><Check size={17}/><span>{toast}</span><button onClick={()=>setToast('')} aria-label="Dismiss notification"><X size={15}/></button></div>}
     {dialog&&<Modal title={dialog.type==='new-folder'?t('A new little space','নতুন একটি জায়গা'):dialog.type==='rename'?t('Rename file','ফাইলের নাম পরিবর্তন'):dialog.type==='move'?t('Move to a folder','ফোল্ডারে সরান'):dialog.type==='folder'?t('Manage folder','ফোল্ডার পরিচালনা'):dialog.type==='remove'?t('Remove from this workspace?','ওয়ার্কস্পেস থেকে সরাবেন?'):dialog.type==='connect'?t('Your Telegram, connected.','আপনার টেলিগ্রাম যুক্ত করুন।'):dialog.type==='settings'?t('Make yourself at home','আপনার মতো করে সাজান'):dialog.type==='security'?t('A clear view of your storage','আপনার স্টোরেজ সম্পর্কে'):dialog.type==='disconnect'?t('Disconnect Telegram?','টেলিগ্রাম বিচ্ছিন্ন করবেন?'):dialog.type==='recovery'?t('Recover from Telegram?','টেলিগ্রাম থেকে রিকভার করবেন?'):t('A little help getting started','শুরু করার নির্দেশনা')} onClose={closeDialog} wide={dialog.type==='settings'}>
       {(['new-folder','rename','move','folder'] as string[]).includes(dialog.type)&&<form onSubmit={submitForm}><p className="modal-description">{dialog.type==='rename'?t('This changes the display name in your drive. The original attachment keeps its name.','এটি ড্রাইভে দেখানো নাম বদলায়। মূল ফাইলের নাম বদলায় না।'):dialog.type==='move'?t('Organization changes here. Your original file stays just as it is.','ফাইল গুছিয়ে রাখুন। মূল ফাইল যেমন আছে তেমনই থাকবে।'):t('Give your files a place to belong. Folders stay inside your filedeck.ai catalog.','ফাইলগুলো গুছিয়ে রাখুন। ফোল্ডার filedeck.ai ক্যাটালগে থাকে।')}</p>{dialog.type!=='move'&&<label className="field-label">{t('Name','নাম')}<input autoFocus value={formValue} onChange={event=>setFormValue(event.target.value)} placeholder={t('Something worth keeping','মনে রাখার মতো কিছু')} maxLength={255} required/></label>}{(dialog.type==='move'||dialog.type==='folder')&&<label className="field-label">{t('Destination folder','যে ফোল্ডারে সরাবেন')}<select value={moveTarget} onChange={event=>setMoveTarget(event.target.value)}><option value="">{dialog.type==='folder'?t('Keep current location','বর্তমান অবস্থানে রাখুন'):t('My drive (root)','আমার ড্রাইভ (মূল)')}</option>{dialog.type==='folder'&&<option value="__root">{t('My drive (root)','আমার ড্রাইভ (মূল)')}</option>}{catalog.folders.filter(folder=>dialog.type!=='folder'||canMoveFolder(catalog.folders,dialog.folder.id,folder.id)).map(folder=><option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label>}{formError&&<p className="form-error" role="alert">{formError}</p>}<div className="modal-actions"><button type="button" className="button button-light" onClick={closeDialog}>{t('Cancel','বাতিল')}</button><button type="submit" disabled={savingForm} className="button primary">{dialog.type==='new-folder'?t('Create folder','ফোল্ডার তৈরি'):dialog.type==='move'?t('Move files','ফাইল সরান'):t('Save changes','সেভ করুন')}<ArrowRight size={15}/></button></div>{dialog.type==='folder'&&<div className="folder-delete"><p>{t('Removing a folder also removes its subfolders. What should happen to their files?','ফোল্ডার সরালে ভেতরের ফোল্ডারও সরবে। ফাইলগুলো কী করবেন?')}</p><button type="button" onClick={()=>deleteFolder(dialog.folder,false)}>{t('Remove folder & move files to My drive','ফোল্ডার সরিয়ে ফাইল আমার ড্রাইভে রাখুন')}</button><button type="button" className="danger-text" onClick={()=>deleteFolder(dialog.folder,true)}>{t('Remove folder & move files to trash','ফোল্ডার সরিয়ে ফাইল ট্র্যাশে রাখুন')}</button></div>}</form>}
@@ -564,26 +761,30 @@ export default function Drive() {
     </Modal>}
     {duplicatePrompt&&<Modal title={t('You already have this original','এই মূল ফাইলটি আপনার কাছে আছে')} onClose={()=>{duplicateDecision.current?.('cancel');duplicateDecision.current=null;setDuplicatePrompt(null);}}><p className="modal-description">{t(`“${duplicatePrompt.name}” has the same verified SHA-256 and byte count as “${duplicatePrompt.existing.name}” in this browser. Keep another original copy or organize the existing bytes in this location.`,`এই ব্রাউজারে “${duplicatePrompt.name}” এবং “${duplicatePrompt.existing.name}”-এর যাচাই করা SHA-256 ও বাইট সংখ্যা এক। আরেকটি মূল কপি রাখুন অথবা একই বাইট এই ফোল্ডারে গুছিয়ে রাখুন।`)}</p><div className="duplicate-options"><button className="button button-light" onClick={()=>{duplicateDecision.current?.('keep');duplicateDecision.current=null;setDuplicatePrompt(null);}}>{t('Keep another copy','আরেকটি কপি রাখুন')}</button><button className="button primary" disabled={!duplicatePrompt.reuseAvailable} onClick={()=>{duplicateDecision.current?.('reuse');duplicateDecision.current=null;setDuplicatePrompt(null);}}>{t('Reuse existing original','বিদ্যমান মূল ফাইল ব্যবহার করুন')}</button></div>{!duplicatePrompt.reuseAvailable&&<p className="fine-print">{t('The previous original is missing from this browser. Keep another copy to save these bytes.','আগের মূল ফাইল এই ব্রাউজারে নেই। বাইট সেভ করতে আরেকটি কপি রাখুন।')}</p>}<button className="text-button auth-start-over" onClick={()=>{duplicateDecision.current?.('cancel');duplicateDecision.current=null;setDuplicatePrompt(null);}}>{t('Cancel this upload','এই আপলোড বাতিল')}</button></Modal>}
     {importCandidate&&<Modal title={t('Restore your organization?','ফোল্ডার ও ট্যাগ ফিরিয়ে আনবেন?')} onClose={()=>setImportCandidate(null)}><p className="modal-description">{t(`Import ${importCandidate.folders.length} folders and ${importCandidate.files.length} file records? This replaces the demo catalog metadata. Existing original bytes are kept; the export itself does not contain them. Files imported from another browser may be unavailable.`,`${importCandidate.folders.length}টি ফোল্ডার ও ${importCandidate.files.length}টি ফাইল রেকর্ড আমদানি করবেন? এটি ডেমো ক্যাটালগের মেটাডেটা প্রতিস্থাপন করবে। বিদ্যমান মূল ফাইল থাকবে, রপ্তানিতে মূল ফাইল নেই। অন্য ব্রাউজারের ফাইল অনুপস্থিত থাকতে পারে।`)}</p>{importError&&<p className="form-error" role="alert">{importError}</p>}<div className="modal-actions"><button className="button button-light" onClick={()=>setImportCandidate(null)}>{t('Cancel','বাতিল')}</button><button className="button primary" onClick={restoreImport}>{t('Import metadata','মেটাডেটা আমদানি')}</button></div></Modal>}
-    {preview&&<Modal title={preview.name} onClose={()=>setPreview(null)} wide><div className="viewer"><div className="viewer-media">{previewError?<div className="preview-fallback"><Info size={34}/><p>{previewError}</p></div>:!previewUrl?<LoaderCircle size={30} className="spin"/>:safePreview(preview)==='image'?<img src={previewUrl} alt={preview.name}/>:safePreview(preview)==='video'?<video src={previewUrl} controls playsInline onError={()=>setPreviewError(t('This codec cannot be played here. Download the original to open it locally.','এই কোডেক এখানে চলবে না। মূল ফাইল ডাউনলোড করে খুলুন।'))}/>:safePreview(preview)==='audio'?<div className="audio-preview"><Music2 size={55}/><audio src={previewUrl} controls onError={()=>setPreviewError(t('This audio format cannot be played here. Download the original.','এই অডিও ফরম্যাট এখানে চলবে না। মূল ফাইল ডাউনলোড করুন।'))}/></div>:safePreview(preview)==='pdf'?<iframe src={previewUrl} title={preview.name} sandbox="" referrerPolicy="no-referrer"/>:<div className="preview-fallback"><TypeIcon kind={preview.kind} size={48}/><h3>{t('Some things are best opened at home.','কিছু ফাইল নিজের অ্যাপে খোলাই ভালো।')}</h3><p>{t('A safe preview isn’t available for this format. Download the original to open it with your favorite app.','এই ফরম্যাটের নিরাপদ প্রিভিউ নেই। মূল ফাইল ডাউনলোড করে উপযুক্ত অ্যাপে খুলুন।')}</p></div>}</div><div className="viewer-actions"><button className="button primary" onClick={()=>download(preview)}><Download size={16}/>{t('Download original','মূল ফাইল ডাউনলোড')}</button><button className={`button button-light ${preview.favorite?'favorited':''}`} onClick={()=>favorite(preview)}><Star size={16} fill={preview.favorite?'currentColor':'none'}/>{preview.favorite?t('Favorited','পছন্দে আছে'):t('Favorite','পছন্দে রাখুন')}</button></div><dl className="file-details"><div><dt>{t('Original filename','মূল ফাইলের নাম')}</dt><dd>{preview.originalName}</dd></div><div><dt>{t('Size','আকার')}</dt><dd>{formatBytes(preview.bytes)} <span>({preview.bytes.toLocaleString()} bytes)</span></dd></div><div><dt>{t('Added','যোগ হয়েছে')}</dt><dd>{formatDate(preview.createdAt)}</dd></div><div><dt>{t('Location','অবস্থান')}</dt><dd>{catalog.folders.find(folder=>folder.id===preview.folderId)?.name||t('My drive','আমার ড্রাইভ')}</dd></div><div><dt>{t('Source','উৎস')}</dt><dd>{preview.source==='server'?t('Your Telegram storage','আপনার টেলিগ্রাম স্টোরেজ'):preview.asset?t('Bundled demo sample','ডেমোর নমুনা'):t('This browser · not Telegram','এই ব্রাউজার · টেলিগ্রাম নয়')}</dd></div><div><dt>{t('File type','ফাইলের ধরন')}</dt><dd>{preview.mime}</dd></div>{preview.sha256&&<div className="hash-detail"><dt>SHA-256</dt><dd>{preview.sha256}</dd></div>}</dl><div className="tags-section"><label htmlFor="tag-input"><Tag size={15}/>{t('Tags','ট্যাগ')}</label><div className="tag-list">{preview.tags.map(tag=><button key={tag} onClick={()=>{const next=preview.tags.filter(item=>item!==tag);updateTags(preview,next);}}>{tag}<X size={12}/></button>)}<input id="tag-input" value={tagValue} onChange={event=>setTagValue(event.target.value)} placeholder={t('Add a tag + Enter','ট্যাগ লিখে Enter দিন')} maxLength={40} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();const tag=tagValue.trim();if(tag&&!preview.tags.includes(tag)){const next=[...preview.tags,tag];updateTags(preview,next);}setTagValue('');}}}/></div></div></div></Modal>}
+    {preview&&<Modal title={preview.name} onClose={()=>setPreview(null)} wide><div className="viewer"><div className="viewer-media">{previewError?<div className="preview-fallback"><Info size={34}/><p>{previewError}</p></div>:!previewUrl?<div className="preview-loading-card"><LoaderCircle size={32} className="spin"/><strong>{t('Loading preview from Telegram…','টেলিগ্রাম থেকে প্রিভিউ লোড হচ্ছে…')}</strong>{previewProgress!==null&&<><div className="preview-progress-track"><div className="preview-progress-fill" style={{width:`${previewProgress}%`}}/></div><p>{previewBytes?`${formatBytes(previewBytes.current)} / ${formatBytes(previewBytes.total)} (${previewProgress}%)`:`${previewProgress}%`}</p></>}{!previewProgress&&<p>{preview.name} · {formatBytes(preview.bytes)}</p>}</div>:safePreview(preview)==='image'?<img src={previewUrl} alt={preview.name}/>:safePreview(preview)==='video'?<video src={previewUrl} controls playsInline onError={()=>setPreviewError(t('This codec cannot be played here. Download the original to open it locally.','এই কোডেক এখানে চলবে না। মূল ফাইল ডাউনলোড করে খুলুন।'))}/>:safePreview(preview)==='audio'?<div className="audio-preview"><Music2 size={55}/><audio src={previewUrl} controls onError={()=>setPreviewError(t('This audio format cannot be played here. Download the original.','এই অডিও ফরম্যাট এখানে চলবে না। মূল ফাইল ডাউনলোড করুন।'))}/></div>:safePreview(preview)==='pdf'?<iframe src={previewUrl} title={preview.name} sandbox="" referrerPolicy="no-referrer"/>:<div className="preview-fallback"><TypeIcon kind={preview.kind} size={48}/><h3>{t('Some things are best opened at home.','কিছু ফাইল নিজের অ্যাপে খোলাই ভালো।')}</h3><p>{t('A safe preview isn’t available for this format. Download the original to open it with your favorite app.','এই ফরম্যাটের নিরাপদ প্রিভিউ নেই। মূল ফাইল ডাউনলোড করে উপযুক্ত অ্যাপে খুলুন।')}</p></div>}</div><div className="viewer-actions"><button className="button primary" onClick={()=>download(preview)}><Download size={16}/>{t('Download original','মূল ফাইল ডাউনলোড')}</button><button className={`button button-light ${preview.favorite?'favorited':''}`} onClick={()=>favorite(preview)}><Star size={16} fill={preview.favorite?'currentColor':'none'}/>{preview.favorite?t('Favorited','পছন্দে আছে'):t('Favorite','পছন্দে রাখুন')}</button></div><dl className="file-details"><div><dt>{t('Original filename','মূল ফাইলের নাম')}</dt><dd>{preview.originalName}</dd></div><div><dt>{t('Size','আকার')}</dt><dd>{formatBytes(preview.bytes)} <span>({preview.bytes.toLocaleString()} bytes)</span></dd></div><div><dt>{t('Added','যোগ হয়েছে')}</dt><dd>{formatDate(preview.createdAt)}</dd></div><div><dt>{t('Location','অবস্থান')}</dt><dd>{catalog.folders.find(folder=>folder.id===preview.folderId)?.name||t('My drive','আমার ড্রাইভ')}</dd></div><div><dt>{t('Source','উৎস')}</dt><dd>{preview.source==='server'?t('Your Telegram storage','আপনার টেলিগ্রাম স্টোরেজ'):preview.asset?t('Bundled demo sample','ডেমোর নমুনা'):t('This browser · not Telegram','এই ব্রাউজার · টেলিগ্রাম নয়')}</dd></div><div><dt>{t('File type','ফাইলের ধরন')}</dt><dd>{preview.mime}</dd></div>{preview.sha256&&<div className="hash-detail"><dt>SHA-256</dt><dd>{preview.sha256}</dd></div>}</dl><div className="tags-section"><label htmlFor="tag-input"><Tag size={15}/>{t('Tags','ট্যাগ')}</label><div className="tag-list">{preview.tags.map(tag=><button key={tag} onClick={()=>{const next=preview.tags.filter(item=>item!==tag);updateTags(preview,next);}}>{tag}<X size={12}/></button>)}<input id="tag-input" value={tagValue} onChange={event=>setTagValue(event.target.value)} placeholder={t('Add a tag + Enter','ট্যাগ লিখে Enter দিন')} maxLength={40} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();const tag=tagValue.trim();if(tag&&!preview.tags.includes(tag)){const next=[...preview.tags,tag];updateTags(preview,next);}setTagValue('');}}}/></div></div></div></Modal>}
   </div>;
 }
 
 function Empty({icon,title,text,action,onAction}: {icon:React.ReactNode;title:string;text:string;action:string;onAction:()=>void}) {return <div className="empty-state"><div className="empty-icon">{icon}</div><h3>{title}</h3><p>{text}</p><button className="button button-light" onClick={onAction}>{action}<ArrowRight size={15}/></button></div>;}
 function LocalThumbnail({file}:{file:DriveFile}) {
   const [url,setUrl]=useState(()=>thumbnailCache.get(file.id)||'');
+  const [loading,setLoading]=useState(!thumbnailCache.has(file.id));
   useEffect(()=>{
     let disposed=false;
     if(thumbnailCache.has(file.id)){
       setUrl(thumbnailCache.get(file.id)!);
+      setLoading(false);
       return;
     }
     (async()=>{
       try {
+        setLoading(true);
         const cached = await getOriginal(file.originalId || file.id);
         if(cached && !disposed){
           const localUrl = URL.createObjectURL(cached);
           thumbnailCache.set(file.id, localUrl);
           setUrl(localUrl);
+          setLoading(false);
           return;
         }
         if(file.remoteMessageId){
@@ -593,14 +794,23 @@ function LocalThumbnail({file}:{file:DriveFile}) {
             const localUrl = URL.createObjectURL(blob);
             thumbnailCache.set(file.id, localUrl);
             setUrl(localUrl);
+            setLoading(false);
           }
         }
       } catch (e) {
         console.warn('Could not load thumbnail for', file.name, e);
+      } finally {
+        if(!disposed) setLoading(false);
       }
     })();
     return()=>{disposed=true;};
   },[file.id,file.originalId,file.remoteMessageId,file.name]);
 
-  return url&&safePreview(file)==='image'?<img src={url} alt="" loading="lazy" onError={()=>setUrl('')}/>:<div className="local-image-placeholder"><FileImage size={40}/></div>;
+  if (url && safePreview(file) === 'image') {
+    return <img src={url} alt="" loading="lazy" onError={()=>setUrl('')}/>;
+  }
+  if (loading) {
+    return <div className="local-image-placeholder"><LoaderCircle size={22} className="spin" style={{opacity: 0.5}}/></div>;
+  }
+  return <div className="local-image-placeholder"><FileImage size={40}/></div>;
 }

@@ -12,14 +12,18 @@ export type Transfer = {
   status: 'saving' | 'queued' | 'sending' | 'verifying' | 'waiting' | 'reconciling' | 'completed' | 'failed' | 'cancelled';
   error?: string; createdAt: string; state?: string; stagedBytes?: number; stageBytes?: number; providerBytes?: number;
   retryAfterSeconds?: number; source?: 'server';
+  direction?: 'upload' | 'download';
+  kind?: FileKind;
 };
 export type Catalog = {schemaVersion: 1; files: DriveFile[]; folders: Folder[]; transfers: Transfer[]};
 export const MAX_FILE_BYTES = 500 * 1024 * 1024;
 export function kindFor(mime: string, name: string): FileKind {
-  if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('audio/')) return 'audio';
-  return mime.startsWith('text/') || /\.(pdf|docx?|xlsx?|pptx?|md|csv|txt)$/i.test(name) ? 'document' : 'other';
+  const ext = name.split('.').pop()?.toLowerCase() || '';
+  if (mime.startsWith('image/') || ['jpg','jpeg','png','gif','webp','svg','avif','bmp','ico'].includes(ext)) return 'image';
+  if (mime.startsWith('video/') || ['mp4','webm','mov','mkv','avi','m4v'].includes(ext)) return 'video';
+  if (mime.startsWith('audio/') || ['mp3','wav','ogg','m4a','flac','aac','wma'].includes(ext)) return 'audio';
+  if (mime.startsWith('text/') || /\.(pdf|docx?|xlsx?|pptx?|md|csv|txt|log|json|xml|html)$/i.test(name)) return 'document';
+  return 'other';
 }
 export function formatBytes(bytes: number): string {
   if (!bytes) return '0 B';
