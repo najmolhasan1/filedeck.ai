@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Cloud, CloudUpload, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Pause, Play, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Star, Tag, Trash2, Upload, Wifi, X } from 'lucide-react';
+import { Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Cloud, CloudUpload, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Star, Tag, Trash2, Upload, Volume2, VolumeX, Wifi, X } from 'lucide-react';
 import { canMoveFolder, Catalog, DriveFile, FileKind, Folder, Transfer, formatBytes, initialCatalog, kindFor, MAX_FILE_BYTES, safePreview } from '@/lib/catalog';
 import { commitCatalog, getOriginal, loadCatalog, saveCatalog, saveOriginal } from '@/lib/storage';
 import { APIError, ServerGateway, type ServerUser, type UploadDescriptor } from '@/lib/server';
@@ -100,6 +100,15 @@ export default function Drive() {
   const sessionTransfersRef=useRef<Set<string>>(new Set());
   const activeTransferTasks=useRef<Map<string,ActiveTransferTask>>(new Map());
   const [toast,setToast]=useState('');
+  const [activeAudioFile,setActiveAudioFile]=useState<DriveFile|null>(null);
+  const [isPlayingAudio,setIsPlayingAudio]=useState(false);
+  const [audioLoading,setAudioLoading]=useState(false);
+  const [audioProgress,setAudioProgress]=useState(0);
+  const [audioCurrentTime,setAudioCurrentTime]=useState(0);
+  const [audioDuration,setAudioDuration]=useState(0);
+  const [isMuted,setIsMuted]=useState(false);
+  const audioRef=useRef<HTMLAudioElement|null>(null);
+  const audioObjectUrlRef=useRef<string|null>(null);
   const [mobileNav,setMobileNav]=useState(false);
   const [menu,setMenu]=useState<string|null>(null);
   const [hero,setHero]=useState(()=>!hasInitialSession);
@@ -144,6 +153,108 @@ export default function Drive() {
   };
   const t=(en:string,bn:string)=>locale==='bn'?bn:en;
   const notify=useCallback((message:string)=>setToast(message),[]);
+
+  const formatAudioTime=(sec:number)=>{
+    if(!sec||isNaN(sec))return '0:00';
+    const m=Math.floor(sec/60);
+    const s=Math.floor(sec%60);
+    return `${m}:${s<10?'0':''}${s}`;
+  };
+
+  const toggleAudioPlay=useCallback(async(file:DriveFile)=>{
+    if(activeAudioFile?.id===file.id){
+      if(audioRef.current){
+        if(isPlayingAudio){
+          audioRef.current.pause();
+          setIsPlayingAudio(false);
+        }else{
+          audioRef.current.play().then(()=>setIsPlayingAudio(true)).catch(()=>{});
+        }
+      }
+      return;
+    }
+    setActiveAudioFile(file);
+    setIsPlayingAudio(false);
+    setAudioLoading(true);
+    setAudioProgress(0);
+    setAudioCurrentTime(0);
+    setAudioDuration(0);
+    if(audioObjectUrlRef.current){
+      URL.revokeObjectURL(audioObjectUrlRef.current);
+      audioObjectUrlRef.current=null;
+    }
+    try{
+      let playUrl='';
+      if(thumbnailCache.has(file.id)){
+        playUrl=thumbnailCache.get(file.id)!;
+      }else{
+        const cached=await getOriginal(file.originalId||file.id);
+        if(cached){
+          playUrl=URL.createObjectURL(cached);
+          audioObjectUrlRef.current=playUrl;
+          thumbnailCache.set(file.id,playUrl);
+        }else if(file.remoteMessageId){
+          const blob=await telegramGateway.downloadFile(file.remoteMessageId);
+          void saveOriginal(file.id,blob);
+          playUrl=URL.createObjectURL(blob);
+          audioObjectUrlRef.current=playUrl;
+          thumbnailCache.set(file.id,playUrl);
+        }else if(file.asset){
+          playUrl=file.asset;
+        }else if(serverMode&&file.source==='server'){
+          playUrl=gateway.contentUrl(file.id);
+        }
+      }
+      if(playUrl&&audioRef.current){
+        audioRef.current.src=playUrl;
+        audioRef.current.load();
+        await audioRef.current.play();
+        setIsPlayingAudio(true);
+      }
+    }catch(err){
+      console.warn('Audio playback error',err);
+      notify(t('Could not load audio. Try again or download.','অডিও লোড করা যায়নি। আবার চেষ্টা করুন বা ডাউনলোড করুন।'));
+    }finally{
+      setAudioLoading(false);
+    }
+  },[activeAudioFile?.id,isPlayingAudio,serverMode,gateway,t,notify]);
+
+  const closeAudioPlayer=useCallback(()=>{
+    if(audioRef.current){
+      audioRef.current.pause();
+      audioRef.current.src='';
+    }
+    if(audioObjectUrlRef.current){
+      URL.revokeObjectURL(audioObjectUrlRef.current);
+      audioObjectUrlRef.current=null;
+    }
+    setActiveAudioFile(null);
+    setIsPlayingAudio(false);
+    setAudioProgress(0);
+    setAudioCurrentTime(0);
+  },[]);
+
+  const handleSeek=(pct:number)=>{
+    if(audioRef.current&&audioRef.current.duration){
+      const target=(pct/100)*audioRef.current.duration;
+      audioRef.current.currentTime=target;
+      setAudioCurrentTime(target);
+      setAudioProgress(pct);
+    }
+  };
+
+  const handleScrubClick=(e:React.MouseEvent<HTMLDivElement>)=>{
+    const rect=e.currentTarget.getBoundingClientRect();
+    const clickX=e.clientX-rect.left;
+    const pct=Math.max(0,Math.min(100,(clickX/rect.width)*100));
+    handleSeek(pct);
+  };
+
+  const seekRelative=(offset:number)=>{
+    if(audioRef.current){
+      audioRef.current.currentTime=Math.max(0,Math.min(audioRef.current.duration||0,audioRef.current.currentTime+offset));
+    }
+  };
   const explainError=(error:unknown)=>{
     const message=error instanceof Error?error.message:'This request could not be completed.';
     if(error instanceof APIError&&error.status===401){
@@ -1139,7 +1250,122 @@ export default function Drive() {
         {filters&&<div className="filter-panel"><label>{t('File type','ফাইলের ধরন')}<select value={kind} onChange={event=>setKind(event.target.value)}><option value="all">{t('All types','সব ধরনের')}</option><option value="image">{t('Images','ছবি')}</option><option value="document">{t('Documents','ডকুমেন্ট')}</option><option value="video">{t('Videos','ভিডিও')}</option><option value="audio">{t('Audio','অডিও')}</option></select></label><label>{t('Date added','যোগ করার তারিখ')}<select value={dateFilter} onChange={event=>setDateFilter(event.target.value)}><option value="all">{t('Any time','যেকোনো সময়')}</option><option value="7">{t('Last 7 days','গত ৭ দিন')}</option><option value="30">{t('Last 30 days','গত ৩০ দিন')}</option></select></label><button className="text-button" onClick={()=>{setKind('all');setDateFilter('all');}}>{t('Reset filters','ফিল্টার রিসেট')}</button></div>}
         {view==='trash'&&<div className="local-notice"><Info size={17}/>{t('Trash is reversible. The 30-day reminder does not automatically delete anything from Telegram.','ট্র্যাশ থেকে ফিরিয়ে আনা যায়। ৩০ দিনের স্মারক টেলিগ্রাম থেকে কিছু মুছে দেয় না।')}</div>}
         {selected.size>0&&<div className="selection-bar"><button className="icon-button" aria-label="Clear selection" onClick={()=>setSelected(new Set())}><X size={16}/></button><strong>{selected.size} {t('selected','নির্বাচিত')}</strong><button onClick={()=>setSelected(new Set(visible.map(file=>file.id)))}>{t('Select all','সব নির্বাচন')}</button><div/>{view==='trash'?<><button onClick={()=>restore([...selected])}><Archive size={15}/>{t('Restore','ফিরিয়ে আনুন')}</button><button onClick={()=>openDialog({type:'remove',ids:[...selected]})}><Trash2 size={15}/>{t('Remove','সরান')}</button></>:<><button onClick={()=>openDialog({type:'move',ids:[...selected]})}><FolderOpen size={15}/>{t('Move','সরান')}</button><button onClick={()=>{[...selected].forEach(id=>{const file=catalog.files.find(f=>f.id===id);if(file)download(file);});}}><Download size={15}/>{t('Download','ডাউনলোড')}</button><button onClick={()=>trash([...selected])}><Trash2 size={15}/>{t('Trash','ট্র্যাশ')}</button></>}</div>}
-        {visible.length>0?<div className={layout==='grid'?'file-grid':'file-list'}>{layout==='list'&&<div className="list-header"><span>{t('Name','নাম')}</span><span>{t('File size','আকার')}</span><span>{t('Date added','তারিখ')}</span><span/></div>}{visible.map(file=><article key={file.id} className={`file-card ${selected.has(file.id)?'file-selected':''}`}><div className={`file-thumbnail file-${file.kind}`}><button className="thumbnail-open" aria-label={`Preview ${file.name}`} onClick={()=>{setPreview(file);setTagValue('');}}>{file.kind==='image'&&safePreview(file)?(file.remoteMessageId?<LocalThumbnail file={file}/>:serverMode&&file.source==='server'?<img src={gateway.previewUrl(file.id)} alt="" loading="lazy"/>:file.asset?<img src={file.asset} alt="" loading="lazy"/>:<LocalThumbnail file={file}/>):!file.asset?<div className="uploaded-placeholder"><TypeIcon kind={file.kind} size={40}/><span>{file.name.split('.').pop()?.toUpperCase()}</span></div>:<div className={`document-preview ${file.mime==='application/pdf'?'pdf-preview':file.name.endsWith('.csv')?'sheet-preview':''}`}><div className="paper"><span className="paper-eyebrow">{file.mime==='application/pdf'?'FILEDECK STUDIO':file.name.endsWith('.csv')?'PERSONAL FINANCE':'A LITTLE SPACE TO THINK'}</span><strong>{file.mime==='application/pdf'?'Good things\nstart with a plan.':file.name.endsWith('.csv')?'October\nat a glance.':file.name.endsWith('.md')?'The little\nthings matter.':'Make yourself\nat home.'}</strong><span className="paper-rule"/><span className="paper-line"/><span className="paper-line short"/><span className="paper-stamp">{file.mime==='application/pdf'?'PROJECT BRIEF / 2026':file.name.endsWith('.csv')?'BUDGET & EVERYDAY':'NOTES & EVERYDAY'}</span></div><span className="document-type">{file.name.split('.').pop()?.toUpperCase()}</span></div>}</button><input type="checkbox" className="file-check" checked={selected.has(file.id)} onChange={()=>toggleSelected(file.id)} aria-label={`Select ${file.name}`}/>{file.favorite&&<span className="thumbnail-favorite"><Star size={12} fill="currentColor"/></span>}{file.kind==='video'&&<span className="play-badge"><Film size={22}/></span>}</div><div className="file-card-details">{layout==='list'&&<input type="checkbox" className="list-file-check" checked={selected.has(file.id)} onChange={()=>toggleSelected(file.id)} aria-label={`Select ${file.name}`}/>}<div className={`file-type-icon ${file.kind}`}><TypeIcon kind={file.kind} size={17}/></div><button className="file-name" title={file.name} onClick={()=>{setPreview(file);setTagValue('');}}><strong>{file.name}</strong><span>{formatBytes(file.bytes)}<span>·</span>{formatDate(file.createdAt)}</span></button><span className="list-size">{formatBytes(file.bytes)}</span><span className="list-date">{formatDate(file.createdAt)}</span><div className="file-menu-wrap"><button className={`icon-button file-menu-button ${menu===file.id?'menu-active':''}`} aria-label={`Actions for ${file.name}`} aria-expanded={menu===file.id} onClick={()=>setMenu(menu===file.id?null:file.id)}><Ellipsis size={19}/></button>{menu===file.id&&<><div className="menu-dismiss" onClick={()=>setMenu(null)}/><div className="file-menu" role="menu">{file.trashedAt?<><button role="menuitem" onClick={()=>restore([file.id])}><Archive size={15}/>{t('Restore to drive','ড্রাইভে ফিরিয়ে আনুন')}</button><button role="menuitem" className="danger-text" onClick={()=>openDialog({type:'remove',ids:[file.id]})}><Trash2 size={15}/>{t('Remove from app','অ্যাপ থেকে সরান')}</button></>:<><button role="menuitem" onClick={()=>{setPreview(file);setMenu(null);}}><File size={15}/>{t('Preview & details','প্রিভিউ ও বিস্তারিত')}</button><button role="menuitem" onClick={()=>download(file)}><Download size={15}/>{t('Download original','মূল ফাইল ডাউনলোড')}</button><button role="menuitem" onClick={()=>favorite(file)}><Star size={15}/>{file.favorite?t('Remove favorite','পছন্দ থেকে সরান'):t('Add to favorites','পছন্দে যোগ করুন')}</button><div className="menu-line"/><button role="menuitem" onClick={()=>openDialog({type:'rename',file})}><FileText size={15}/>{t('Rename','নাম পরিবর্তন')}</button><button role="menuitem" onClick={()=>openDialog({type:'move',ids:[file.id]})}><FolderOpen size={15}/>{t('Move to folder','ফোল্ডারে সরান')}</button><button role="menuitem" className="danger-text" onClick={()=>trash([file.id])}><Trash2 size={15}/>{t('Move to trash','ট্র্যাশে সরান')}</button></>}</div></>}</div></div></article>)}</div>:<Empty icon={view==='favorites'?<Star size={30}/>:view==='trash'?<Trash2 size={30}/>:search?<Search size={30}/>:<FolderOpen size={30}/>} title={search?t('No files found','কোনো ফাইল পাওয়া যায়নি'):view==='favorites'?t('A place for your favorites','পছন্দের ফাইলের জায়গা'):view==='trash'?t('Nothing left behind','ট্র্যাশ খালি'):t('A fresh little space','নতুন একটি জায়গা')} text={search?t('Try another filename, tag, or a different filter.','অন্য নাম, ট্যাগ বা ফিল্টার দিয়ে খুঁজুন।'):view==='favorites'?t('Give a file a star and you’ll find it here.','ফাইলে তারকা দিন, এখানে খুঁজে পাবেন।'):view==='trash'?t('Files you move to trash will appear here.','ট্র্যাশে সরানো ফাইল এখানে দেখা যাবে।'):t('Drop something here, or upload your first file.','এখানে ফাইল ছেড়ে দিন, অথবা প্রথম ফাইল আপলোড করুন।')} action={search?t('Clear search & filters','অনুসন্ধান ও ফিল্টার মুছুন'):view==='trash'||view==='favorites'?t('Back to My drive','আমার ড্রাইভে ফিরুন'):t('Upload files','ফাইল আপলোড')} onAction={()=>{if(search){setSearch('');setKind('all');setDateFilter('all');}else if(view==='trash'||view==='favorites')navigate('all');else fileInput.current?.click();}}/>}
+        {visible.length>0?<div className={layout==='grid'?'file-grid':'file-list'}>
+          {layout==='list'&&<div className="list-header"><span>{t('Name','নাম')}</span><span>{t('File size','আকার')}</span><span>{t('Date added','তারিখ')}</span><span/></div>}
+          {visible.map(file=>(
+            <article key={file.id} className={`file-card ${selected.has(file.id)?'file-selected':''}`}>
+              <div className={`file-thumbnail file-${file.kind}`}>
+                <button className="thumbnail-open" aria-label={`Preview ${file.name}`} onClick={()=>{setPreview(file);setTagValue('');}}>
+                  {file.kind==='audio'?(
+                    <div className="audio-card-thumb">
+                      <div className={`audio-disc ${activeAudioFile?.id===file.id&&isPlayingAudio?'spinning':''}`}>
+                        <Music2 size={34}/>
+                      </div>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        className={`audio-card-play-btn ${activeAudioFile?.id===file.id&&isPlayingAudio?'playing':''}`}
+                        onClick={(e)=>{e.stopPropagation();void toggleAudioPlay(file);}}
+                        title={activeAudioFile?.id===file.id&&isPlayingAudio?t('Pause','বিরতি'):t('Play','চালান')}
+                        aria-label={activeAudioFile?.id===file.id&&isPlayingAudio?t('Pause','বিরতি'):t('Play','চালান')}
+                      >
+                        {activeAudioFile?.id===file.id&&audioLoading?(
+                          <LoaderCircle size={20} className="spin"/>
+                        ):activeAudioFile?.id===file.id&&isPlayingAudio?(
+                          <Pause size={20}/>
+                        ):(
+                          <Play size={20} style={{marginLeft:'2px'}}/>
+                        )}
+                      </span>
+                      <span className="audio-tag-pill">AUDIO</span>
+                    </div>
+                  ):(file.kind==='image'||file.kind==='video')?(
+                    <LocalThumbnail file={file}/>
+                  ):!file.asset?(
+                    <div className="uploaded-placeholder"><TypeIcon kind={file.kind} size={40}/><span>{file.name.split('.').pop()?.toUpperCase()}</span></div>
+                  ):(
+                    <div className={`document-preview ${file.mime==='application/pdf'?'pdf-preview':file.name.endsWith('.csv')?'sheet-preview':''}`}>
+                      <div className="paper">
+                        <span className="paper-eyebrow">{file.mime==='application/pdf'?'FILEDECK STUDIO':file.name.endsWith('.csv')?'PERSONAL FINANCE':'A LITTLE SPACE TO THINK'}</span>
+                        <strong>{file.mime==='application/pdf'?'Good things\nstart with a plan.':file.name.endsWith('.csv')?'October\nat a glance.':file.name.endsWith('.md')?'The little\nthings matter.':'Make yourself\nat home.'}</strong>
+                        <span className="paper-rule"/><span className="paper-line"/><span className="paper-line short"/>
+                        <span className="paper-stamp">{file.mime==='application/pdf'?'PROJECT BRIEF / 2026':file.name.endsWith('.csv')?'BUDGET & EVERYDAY':'NOTES & EVERYDAY'}</span>
+                      </div>
+                      <span className="document-type">{file.name.split('.').pop()?.toUpperCase()}</span>
+                    </div>
+                  )}
+                </button>
+                <input type="checkbox" className="file-check" checked={selected.has(file.id)} onChange={()=>toggleSelected(file.id)} aria-label={`Select ${file.name}`}/>
+                {file.favorite&&<span className="thumbnail-favorite"><Star size={12} fill="currentColor"/></span>}
+              </div>
+              <div className="file-card-details">
+                {layout==='list'&&<input type="checkbox" className="list-file-check" checked={selected.has(file.id)} onChange={()=>toggleSelected(file.id)} aria-label={`Select ${file.name}`}/>}
+                <div className={`file-type-icon ${file.kind}`}>
+                  {file.kind==='audio'?(
+                    <button
+                      type="button"
+                      className={`list-audio-play-btn ${activeAudioFile?.id===file.id&&isPlayingAudio?'playing':''}`}
+                      onClick={(e)=>{e.stopPropagation();void toggleAudioPlay(file);}}
+                      title={activeAudioFile?.id===file.id&&isPlayingAudio?t('Pause','বিরতি'):t('Play','চালান')}
+                      aria-label={activeAudioFile?.id===file.id&&isPlayingAudio?t('Pause','বিরতি'):t('Play','চালান')}
+                    >
+                      {activeAudioFile?.id===file.id&&audioLoading?(
+                        <LoaderCircle size={14} className="spin"/>
+                      ):activeAudioFile?.id===file.id&&isPlayingAudio?(
+                        <Pause size={14}/>
+                      ):(
+                        <Play size={14} style={{marginLeft:'1px'}}/>
+                      )}
+                    </button>
+                  ):(
+                    <TypeIcon kind={file.kind} size={17}/>
+                  )}
+                </div>
+                <button className="file-name" title={file.name} onClick={()=>{setPreview(file);setTagValue('');}}>
+                  <strong>{file.name}</strong>
+                  <span>{formatBytes(file.bytes)}<span>·</span>{formatDate(file.createdAt)}</span>
+                </button>
+                <span className="list-size">{formatBytes(file.bytes)}</span>
+                <span className="list-date">{formatDate(file.createdAt)}</span>
+                <div className="file-menu-wrap">
+                  <button className={`icon-button file-menu-button ${menu===file.id?'menu-active':''}`} aria-label={`Actions for ${file.name}`} aria-expanded={menu===file.id} onClick={()=>setMenu(menu===file.id?null:file.id)}>
+                    <Ellipsis size={19}/>
+                  </button>
+                  {menu===file.id&&<>
+                    <div className="menu-dismiss" onClick={()=>setMenu(null)}/>
+                    <div className="file-menu" role="menu">
+                      {file.trashedAt?(
+                        <>
+                          <button role="menuitem" onClick={()=>restore([file.id])}><Archive size={15}/>{t('Restore to drive','ড্রাইভে ফিরিয়ে আনুন')}</button>
+                          <button role="menuitem" className="danger-text" onClick={()=>openDialog({type:'remove',ids:[file.id]})}><Trash2 size={15}/>{t('Remove from app','অ্যাপ থেকে সরান')}</button>
+                        </>
+                      ):(
+                        <>
+                          {file.kind==='audio'&&(
+                            <button role="menuitem" onClick={()=>{void toggleAudioPlay(file);setMenu(null);}}>
+                              {activeAudioFile?.id===file.id&&isPlayingAudio?(
+                                <><Pause size={15}/>{t('Pause audio','অডিও বিরতি')}</>
+                              ):(
+                                <><Play size={15}/>{t('Play audio','অডিও চালান')}</>
+                              )}
+                            </button>
+                          )}
+                          <button role="menuitem" onClick={()=>{setPreview(file);setMenu(null);}}><File size={15}/>{t('Preview & details','প্রিভিউ ও বিস্তারিত')}</button>
+                          <button role="menuitem" onClick={()=>download(file)}><Download size={15}/>{t('Download original','মূল ফাইল ডাউনলোড')}</button>
+                          <button role="menuitem" onClick={()=>favorite(file)}><Star size={15}/>{file.favorite?t('Remove favorite','পছন্দ থেকে সরান'):t('Add to favorites','পছন্দে যোগ করুন')}</button>
+                          <div className="menu-line"/>
+                          <button role="menuitem" onClick={()=>openDialog({type:'rename',file})}><FileText size={15}/>{t('Rename','নাম পরিবর্তন')}</button>
+                          <button role="menuitem" onClick={()=>openDialog({type:'move',ids:[file.id]})}><FolderOpen size={15}/>{t('Move to folder','ফোল্ডারে সরান')}</button>
+                          <button role="menuitem" className="danger-text" onClick={()=>trash([file.id])}><Trash2 size={15}/>{t('Move to trash','ট্র্যাশে সরান')}</button>
+                        </>
+                      )}
+                    </div>
+                  </>}
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>:<Empty icon={view==='favorites'?<Star size={30}/>:view==='trash'?<Trash2 size={30}/>:search?<Search size={30}/>:<FolderOpen size={30}/>} title={search?t('No files found','কোনো ফাইল পাওয়া যায়নি'):view==='favorites'?t('A place for your favorites','পছন্দের ফাইলের জায়গা'):view==='trash'?t('Nothing left behind','ট্র্যাশ খালি'):t('A fresh little space','নতুন একটি জায়গা')} text={search?t('Try another filename, tag, or a different filter.','অন্য নাম, ট্যাগ বা ফিল্টার দিয়ে খুঁজুন।'):view==='favorites'?t('Give a file a star and you’ll find it here.','ফাইলে তারকা দিন, এখানে খুঁজে পাবেন।'):view==='trash'?t('Files you move to trash will appear here.','ট্র্যাশে সরানো ফাইল এখানে দেখা যাবে।'):t('Drop something here, or upload your first file.','এখানে ফাইল ছেড়ে দিন, অথবা প্রথম ফাইল আপলোড করুন।')} action={search?t('Clear search & filters','অনুসন্ধান ও ফিল্টার মুছুন'):view==='trash'||view==='favorites'?t('Back to My drive','আমার ড্রাইভে ফিরুন'):t('Upload files','ফাইল আপলোড')} onAction={()=>{if(search){setSearch('');setKind('all');setDateFilter('all');}else if(view==='trash'||view==='favorites')navigate('all');else fileInput.current?.click();}}/>}
         <div className="files-footer"><span>{visible.length} {t('files','ফাইল')}<span className="footer-dot">·</span>{formatBytes(visible.reduce((sum,file)=>sum+file.bytes,0))}</span><span><ShieldCheck size={13}/>{t('Originals stay original. Always.','মূল ফাইল সবসময় মূল ফাইলই থাকে।')}</span></div></section>}
         <footer className="workspace-footer"><span><span className="footer-green-dot"/>{t('A little more space. A little more peace of mind.','একটু বেশি জায়গা। একটু বেশি স্বস্তি।')}</span><button onClick={()=>openDialog({type:'security'})}>{t('How your files are stored','ফাইল যেভাবে রাখা হয়')}<ArrowRight size={13}/></button></footer>
       </main>
@@ -1284,6 +1510,132 @@ export default function Drive() {
       )
     )}
     {toast&&<div className="toast" role="status"><Check size={17}/><span>{toast}</span><button onClick={()=>setToast('')} aria-label="Dismiss notification"><X size={15}/></button></div>}
+    {activeAudioFile && (
+      <aside className="audio-player-bar" aria-label={t('Audio player','অডিও প্লেয়ার')}>
+        <div className="audio-player-left">
+          <div className={`audio-player-disc ${isPlayingAudio ? 'spinning' : ''}`}>
+            <Music2 size={16}/>
+          </div>
+          <div className="audio-player-meta">
+            <strong title={activeAudioFile.name}>{activeAudioFile.name}</strong>
+            <span>{formatBytes(activeAudioFile.bytes)}</span>
+          </div>
+        </div>
+        <div className="audio-player-center">
+          <div className="audio-player-controls">
+            <button
+              type="button"
+              className="audio-ctrl-btn"
+              onClick={()=>seekRelative(-10)}
+              title={t('Rewind 10s','১০ সেকেন্ড পেছনে')}
+              aria-label={t('Rewind 10s','১০ সেকেন্ড পেছনে')}
+            >
+              <RotateCcw size={15}/>
+            </button>
+            <button
+              type="button"
+              className="audio-main-play-btn"
+              onClick={()=>void toggleAudioPlay(activeAudioFile)}
+              title={isPlayingAudio ? t('Pause','বিরতি') : t('Play','চালান')}
+              aria-label={isPlayingAudio ? t('Pause','বিরতি') : t('Play','চালান')}
+            >
+              {audioLoading ? (
+                <LoaderCircle size={18} className="spin"/>
+              ) : isPlayingAudio ? (
+                <Pause size={18}/>
+              ) : (
+                <Play size={18} style={{marginLeft:'2px'}}/>
+              )}
+            </button>
+            <button
+              type="button"
+              className="audio-ctrl-btn"
+              onClick={()=>seekRelative(10)}
+              title={t('Forward 10s','১০ সেকেন্ড সামনে')}
+              aria-label={t('Forward 10s','১০ সেকেন্ড সামনে')}
+            >
+              <RotateCw size={15}/>
+            </button>
+          </div>
+          <div className="audio-player-scrub">
+            <span className="audio-time">{formatAudioTime(audioCurrentTime)}</span>
+            <div
+              className="audio-scrub-track"
+              onClick={handleScrubClick}
+              role="slider"
+              aria-valuemin={0}
+              aria-valuemax={audioDuration||100}
+              aria-valuenow={audioCurrentTime}
+              tabIndex={0}
+            >
+              <div className="audio-scrub-fill" style={{width:`${audioProgress}%`}}/>
+              <div className="audio-scrub-thumb" style={{left:`${audioProgress}%`}}/>
+            </div>
+            <span className="audio-time">{formatAudioTime(audioDuration)}</span>
+          </div>
+        </div>
+        <div className="audio-player-right">
+          <button
+            type="button"
+            className="icon-button"
+            onClick={()=>{
+              if(audioRef.current){
+                audioRef.current.muted = !isMuted;
+                setIsMuted(!isMuted);
+              }
+            }}
+            title={isMuted ? t('Unmute','শব্দ চালু') : t('Mute','শব্দ বন্ধ')}
+            aria-label={isMuted ? t('Unmute','শব্দ চালু') : t('Mute','শব্দ বন্ধ')}
+          >
+            {isMuted ? <VolumeX size={17}/> : <Volume2 size={17}/>}
+          </button>
+          <button
+            type="button"
+            className="icon-button audio-close-btn"
+            onClick={closeAudioPlayer}
+            title={t('Close player','প্লেয়ার বন্ধ করুন')}
+            aria-label={t('Close player','প্লেয়ার বন্ধ করুন')}
+          >
+            <X size={17}/>
+          </button>
+        </div>
+      </aside>
+    )}
+    <audio
+      ref={audioRef}
+      style={{display:'none'}}
+      onTimeUpdate={()=>{
+        if(audioRef.current){
+          const cur=audioRef.current.currentTime;
+          const dur=audioRef.current.duration||0;
+          setAudioCurrentTime(cur);
+          setAudioDuration(dur);
+          setAudioProgress(dur>0?(cur/dur)*100:0);
+        }
+      }}
+      onLoadedMetadata={()=>{
+        if(audioRef.current){
+          setAudioDuration(audioRef.current.duration||0);
+          setAudioLoading(false);
+        }
+      }}
+      onWaiting={()=>setAudioLoading(true)}
+      onPlaying={()=>{
+        setAudioLoading(false);
+        setIsPlayingAudio(true);
+      }}
+      onPause={()=>setIsPlayingAudio(false)}
+      onEnded={()=>{
+        setIsPlayingAudio(false);
+        setAudioProgress(0);
+        setAudioCurrentTime(0);
+      }}
+      onError={()=>{
+        setAudioLoading(false);
+        setIsPlayingAudio(false);
+        notify(t('Unable to play audio. Download the file to listen locally.','অডিও চালানো যায়নি। শুনতে ফাইলটি ডাউনলোড করুন।'));
+      }}
+    />
     {dialog&&<Modal title={dialog.type==='new-folder'?t('A new little space','নতুন একটি জায়গা'):dialog.type==='rename'?t('Rename file','ফাইলের নাম পরিবর্তন'):dialog.type==='move'?t('Move to a folder','ফোল্ডারে সরান'):dialog.type==='folder'?t('Manage folder','ফোল্ডার পরিচালনা'):dialog.type==='remove'?t('Remove from this workspace?','ওয়ার্কস্পেস থেকে সরাবেন?'):dialog.type==='connect'?t('Your Telegram, connected.','আপনার টেলিগ্রাম যুক্ত করুন।'):dialog.type==='settings'?t('Make yourself at home','আপনার মতো করে সাজান'):dialog.type==='security'?t('A clear view of your storage','আপনার স্টোরেজ সম্পর্কে'):dialog.type==='disconnect'?t('Disconnect Telegram?','টেলিগ্রাম বিচ্ছিন্ন করবেন?'):dialog.type==='recovery'?t('Recover from Telegram?','টেলিগ্রাম থেকে রিকভার করবেন?'):t('A little help getting started','শুরু করার নির্দেশনা')} onClose={closeDialog} wide={dialog.type==='settings'}>
       {(['new-folder','rename','move','folder'] as string[]).includes(dialog.type)&&<form onSubmit={submitForm}><p className="modal-description">{dialog.type==='rename'?t('This changes the display name in your drive. The original attachment keeps its name.','এটি ড্রাইভে দেখানো নাম বদলায়। মূল ফাইলের নাম বদলায় না।'):dialog.type==='move'?t('Organization changes here. Your original file stays just as it is.','ফাইল গুছিয়ে রাখুন। মূল ফাইল যেমন আছে তেমনই থাকবে।'):t('Give your files a place to belong. Folders stay inside your filedeck.ai catalog.','ফাইলগুলো গুছিয়ে রাখুন। ফোল্ডার filedeck.ai ক্যাটালগে থাকে।')}</p>{dialog.type!=='move'&&<label className="field-label">{t('Name','নাম')}<input autoFocus value={formValue} onChange={event=>setFormValue(event.target.value)} placeholder={t('Something worth keeping','মনে রাখার মতো কিছু')} maxLength={255} required/></label>}{(dialog.type==='move'||dialog.type==='folder')&&<label className="field-label">{t('Destination folder','যে ফোল্ডারে সরাবেন')}<select value={moveTarget} onChange={event=>setMoveTarget(event.target.value)}><option value="">{dialog.type==='folder'?t('Keep current location','বর্তমান অবস্থানে রাখুন'):t('My drive (root)','আমার ড্রাইভ (মূল)')}</option>{dialog.type==='folder'&&<option value="__root">{t('My drive (root)','আমার ড্রাইভ (মূল)')}</option>}{catalog.folders.filter(folder=>dialog.type!=='folder'||canMoveFolder(catalog.folders,dialog.folder.id,folder.id)).map(folder=><option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label>}{formError&&<p className="form-error" role="alert">{formError}</p>}<div className="modal-actions"><button type="button" className="button button-light" onClick={closeDialog}>{t('Cancel','বাতিল')}</button><button type="submit" disabled={savingForm} className="button primary">{dialog.type==='new-folder'?t('Create folder','ফোল্ডার তৈরি'):dialog.type==='move'?t('Move files','ফাইল সরান'):t('Save changes','সেভ করুন')}<ArrowRight size={15}/></button></div>{dialog.type==='folder'&&<div className="folder-sync-section">
   <strong><Smartphone size={16}/>{t('Device folder sync & backup','ডিভাইস ফোল্ডার সিঙ্ক ও ব্যাকআপ')}</strong>
@@ -1383,6 +1735,71 @@ export default function Drive() {
 }
 
 function Empty({icon,title,text,action,onAction}: {icon:React.ReactNode;title:string;text:string;action:string;onAction:()=>void}) {return <div className="empty-state"><div className="empty-icon">{icon}</div><h3>{title}</h3><p>{text}</p><button className="button button-light" onClick={onAction}>{action}<ArrowRight size={15}/></button></div>;}
+function extractVideoFrame(blob: Blob): Promise<string> {
+  return new Promise((resolve) => {
+    try {
+      if (typeof window === 'undefined' || typeof document === 'undefined') {
+        resolve('');
+        return;
+      }
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      video.muted = true;
+      video.playsInline = true;
+      video.crossOrigin = 'anonymous';
+      const objectUrl = URL.createObjectURL(blob);
+      video.src = objectUrl;
+
+      let timer: NodeJS.Timeout | null = null;
+      let finished = false;
+
+      const finish = (result: string) => {
+        if (finished) return;
+        finished = true;
+        if (timer) clearTimeout(timer);
+        URL.revokeObjectURL(objectUrl);
+        video.src = '';
+        video.load();
+        resolve(result);
+      };
+
+      timer = setTimeout(() => finish(''), 6000);
+
+      video.onloadedmetadata = () => {
+        const dur = video.duration;
+        const target = dur && !isNaN(dur) ? Math.min(2, Math.max(0.1, dur * 0.15)) : 0.5;
+        video.currentTime = target;
+      };
+
+      video.onseeked = () => {
+        try {
+          const width = video.videoWidth || 360;
+          const height = video.videoHeight || 200;
+          const targetWidth = Math.min(380, width);
+          const targetHeight = Math.max(1, Math.round((height / width) * targetWidth));
+          const canvas = document.createElement('canvas');
+          canvas.width = targetWidth;
+          canvas.height = targetHeight;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+            finish(dataUrl);
+            return;
+          }
+        } catch {
+          // ignore
+        }
+        finish('');
+      };
+
+      video.onerror = () => finish('');
+    } catch {
+      resolve('');
+    }
+  });
+}
+
 function LocalThumbnail({file}:{file:DriveFile}) {
   const [url,setUrl]=useState(()=>thumbnailCache.get(file.id)||'');
   const [loading,setLoading]=useState(!thumbnailCache.has(file.id));
@@ -1396,8 +1813,36 @@ function LocalThumbnail({file}:{file:DriveFile}) {
     (async()=>{
       try {
         setLoading(true);
+        if(file.asset){
+          if(file.kind==='video'){
+            const resp=await fetch(file.asset);
+            const blob=await resp.blob();
+            const frame=await extractVideoFrame(blob);
+            if(frame&&!disposed){
+              thumbnailCache.set(file.id,frame);
+              setUrl(frame);
+              setLoading(false);
+              return;
+            }
+          }
+          if(!disposed){
+            thumbnailCache.set(file.id,file.asset);
+            setUrl(file.asset);
+            setLoading(false);
+            return;
+          }
+        }
         const cached = await getOriginal(file.originalId || file.id);
         if(cached && !disposed){
+          if(file.kind==='video'){
+            const frameUrl=await extractVideoFrame(cached);
+            if(frameUrl&&!disposed){
+              thumbnailCache.set(file.id,frameUrl);
+              setUrl(frameUrl);
+              setLoading(false);
+              return;
+            }
+          }
           const localUrl = URL.createObjectURL(cached);
           thumbnailCache.set(file.id, localUrl);
           setUrl(localUrl);
@@ -1408,6 +1853,15 @@ function LocalThumbnail({file}:{file:DriveFile}) {
           const blob = await telegramGateway.downloadFile(file.remoteMessageId);
           if(blob && !disposed){
             void saveOriginal(file.id, blob);
+            if(file.kind==='video'){
+              const frameUrl=await extractVideoFrame(blob);
+              if(frameUrl&&!disposed){
+                thumbnailCache.set(file.id,frameUrl);
+                setUrl(frameUrl);
+                setLoading(false);
+                return;
+              }
+            }
             const localUrl = URL.createObjectURL(blob);
             thumbnailCache.set(file.id, localUrl);
             setUrl(localUrl);
@@ -1421,13 +1875,31 @@ function LocalThumbnail({file}:{file:DriveFile}) {
       }
     })();
     return()=>{disposed=true;};
-  },[file.id,file.originalId,file.remoteMessageId,file.name]);
+  },[file.id,file.originalId,file.remoteMessageId,file.name,file.kind,file.asset]);
 
-  if (url && safePreview(file) === 'image') {
-    return <img src={url} alt="" loading="lazy" onError={()=>setUrl('')}/>;
+  if (url) {
+    return (
+      <div className="thumb-media-wrapper">
+        <img src={url} alt={file.name} loading="lazy" onError={()=>setUrl('')}/>
+        {file.kind==='video'&&<span className="play-badge"><Play size={20} fill="currentColor"/></span>}
+        {file.kind==='video'&&<span className="video-tag-pill"><Film size={10}/><span>{file.name.split('.').pop()?.toUpperCase()||'VIDEO'}</span></span>}
+      </div>
+    );
   }
   if (loading) {
-    return <div className="local-image-placeholder"><LoaderCircle size={22} className="spin" style={{opacity: 0.5}}/></div>;
+    return (
+      <div className="local-image-placeholder video-placeholder">
+        <LoaderCircle size={22} className="spin" style={{opacity: 0.5}}/>
+        {file.kind==='video'&&<span className="play-badge" style={{opacity: 0.6}}><Play size={18} fill="currentColor"/></span>}
+        {file.kind==='video'&&<span className="video-tag-pill"><Film size={10}/><span>{file.name.split('.').pop()?.toUpperCase()||'VIDEO'}</span></span>}
+      </div>
+    );
   }
-  return <div className="local-image-placeholder"><FileImage size={40}/></div>;
+  return (
+    <div className="local-image-placeholder">
+      {file.kind==='video'?<Film size={38}/>:<FileImage size={40}/>}
+      {file.kind==='video'&&<span className="play-badge"><Play size={20} fill="currentColor"/></span>}
+      {file.kind==='video'&&<span className="video-tag-pill"><Film size={10}/><span>{file.name.split('.').pop()?.toUpperCase()||'VIDEO'}</span></span>}
+    </div>
+  );
 }
