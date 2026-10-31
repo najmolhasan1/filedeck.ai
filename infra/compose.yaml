@@ -1,0 +1,144 @@
+name: cloudnest-dev
+
+# Local long-running services. TLS, encrypted volumes, KMS and provider
+# acceptance are operator/release gates, not properties of this Compose file.
+x-backend-build: &backend-build
+  context: ..
+  dockerfile: infra/Dockerfile
+  target: backend
+  secrets: [proxy_ca]
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: cloudnest
+      POSTGRES_USER: cloudnest
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run node scripts/dev-stack.mjs setup}
+    ports: ["127.0.0.1:${POSTGRES_PORT:-5432}:5432"]
+    volumes: [postgres_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U cloudnest -d cloudnest]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.5-alpine
+    command: [redis-server, --appendonly, "yes", --protected-mode, "yes"]
+    ports: ["127.0.0.1:${REDIS_PORT:-6379}:6379"]
+    volumes: [redis_data:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  migrate:
+    build: *backend-build
+    command: [node, scripts/migrate.mjs]
+    environment:
+      DATABASE_ADMIN_URL: postgresql://cloudnest:${POSTGRES_PASSWORD}@postgres:5432/cloudnest
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Run the dev-stack setup}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  worker:
+    build: *backend-build
+    command: [npm, run, serve, --workspace=@cloudnest/telegram-worker]
+    user: "${CLOUDNEST_UID:-1000}:${CLOUDNEST_GID:-1000}"
+    environment:
+      WORKER_HOST: 0.0.0.0
+      WORKER_PORT: 4001
+      CLOUDNEST_WORKER_TOKEN: ${CLOUDNEST_WORKER_TOKEN:?Run the dev-stack setup}
+      CLOUDNEST_WORKER_ENABLE: ${CLOUDNEST_WORKER_ENABLE:-false}
+      CLOUDNEST_SESSION_STORAGE_APPROVED: ${CLOUDNEST_SESSION_STORAGE_APPROVED:-false}
+      TELEGRAM_API_ID: ${TELEGRAM_API_ID:-}
+      TELEGRAM_API_HASH: ${TELEGRAM_API_HASH:-}
+      TDLIB_DATABASE_KEY: ${TDLIB_DATABASE_KEY:-}
+      TDLIB_USE_TEST_DC: ${TDLIB_USE_TEST_DC:-false}
+      TDLIB_STATE_DIR: /data/tdlib
+      STAGING_ROOT: /data/staging
+    volumes:
+      - type: bind
+        source: ${CLOUDNEST_STAGING_HOST_DIR:-../.data/staging}
+        target: /data/staging
+      - type: bind
+        source: ${CLOUDNEST_SESSION_HOST_DIR:-../.data/tdlib}
+        target: /data/tdlib
+    read_only: true
+    tmpfs: [/tmp]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4001/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: *backend-build
+    user: "${CLOUDNEST_UID:-1000}:${CLOUDNEST_GID:-1000}"
+    environment:
+      CLOUDNEST_DEMO: "0"
+      CLOUDNEST_API_ENABLE: "true"
+      API_HOST: 0.0.0.0
+      API_PORT: 4000
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      DATABASE_URL: postgresql://cloudnest_app:${POSTGRES_APP_PASSWORD}@postgres:5432/cloudnest
+      AUTH_DATABASE_URL: postgresql://cloudnest_app:${POSTGRES_APP_PASSWORD}@postgres:5432/cloudnest
+      TELEGRAM_WORKER_URL: http://worker:4001
+      CLOUDNEST_WORKER_TOKEN: ${CLOUDNEST_WORKER_TOKEN:?Run the dev-stack setup}
+      CLOUDNEST_COOKIE_SECRET: ${CLOUDNEST_COOKIE_SECRET:?Run the dev-stack setup}
+      STAGING_ROOT: /data/staging
+      CLOUDNEST_DATA_DIR: /data/api
+    ports: ["127.0.0.1:${API_PORT:-4000}:4000"]
+    volumes:
+      - type: bind
+        source: ${CLOUDNEST_STAGING_HOST_DIR:-../.data/staging}
+        target: /data/staging
+      - api_data:/data/api
+    read_only: true
+    tmpfs: [/tmp]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      worker:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:4000/v1/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  web:
+    profiles: [web]
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile
+      target: frontend
+      args:
+        NEXT_PUBLIC_STORAGE_MODE: server
+        API_URL: http://api:4000
+      secrets: [proxy_ca]
+    environment:
+      API_URL: http://api:4000
+      NEXT_PUBLIC_STORAGE_MODE: server
+    ports: ["127.0.0.1:${WEB_PORT:-3000}:3000"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+secrets:
+  proxy_ca:
+    file: ${CLOUDNEST_BUILD_CA_FILE:-/etc/ssl/certs/ca-certificates.crt}
+
+volumes:
+  postgres_data:
+  redis_data:
+  api_data:

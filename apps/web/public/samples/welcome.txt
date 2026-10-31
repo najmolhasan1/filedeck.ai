@@ -1,0 +1,9 @@
+Welcome to CloudNest.
+
+A home for your files.
+
+This is an interactive local demo, with sample originals you can download. Uploads are saved in this browser, not sent to Telegram. Clearing browser data can remove local originals.
+
+Create folders, mark favorites, add tags, and find what matters. Trash is reversible. Export metadata from Settings.
+
+A live Telegram connection requires a configured TDLib worker and verified feasibility tests. This independent third-party client is not affiliated with Telegram.

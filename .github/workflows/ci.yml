@@ -1,0 +1,46 @@
+name: Build, database isolation and browser journeys
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_DB: cloudnest
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: cloudnest-ci-only-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d cloudnest"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_ADMIN_URL: postgresql://postgres:cloudnest-ci-only-password@127.0.0.1:5432/cloudnest
+      POSTGRES_APP_USER: cloudnest_ci
+      POSTGRES_APP_PASSWORD: cloudnest-ci-runtime-only-password-at-least-32
+      TEST_DATABASE_URL: postgresql://cloudnest_ci:cloudnest-ci-runtime-only-password-at-least-32@127.0.0.1:5432/cloudnest
+      TEST_ADMIN_DATABASE_URL: postgresql://postgres:cloudnest-ci-only-password@127.0.0.1:5432/cloudnest
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run db:migrate
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:server
+      - run: npm run build
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - run: npm run test:server-ui
