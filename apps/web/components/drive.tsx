@@ -1,9 +1,9 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Cloud, CloudUpload, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Star, Tag, Trash2, Upload, Volume2, VolumeX, Wifi, X } from 'lucide-react';
+import { AlertTriangle, Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Cloud, CloudUpload, Database, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Star, Tag, Trash2, Upload, Volume2, VolumeX, Wifi, X } from 'lucide-react';
 import { canMoveFolder, Catalog, DriveFile, FileKind, Folder, FolderKind, getFolderKind, Transfer, formatBytes, initialCatalog, kindFor, MAX_FILE_BYTES, safePreview } from '@/lib/catalog';
-import { commitCatalog, getOriginal, loadCatalog, saveCatalog, saveOriginal } from '@/lib/storage';
+import { clearMediaCache, commitCatalog, getCacheStats, getOriginal, loadCatalog, MAX_CACHE_BYTES, saveCatalog, saveOriginal } from '@/lib/storage';
 import { APIError, ServerGateway, type ServerUser, type UploadDescriptor } from '@/lib/server';
 import { telegramGateway, type TelegramUser } from '@/lib/telegram-client';
 import ConnectPanel from './connect-panel';
@@ -104,6 +104,8 @@ export default function Drive() {
   const [previewProgress,setPreviewProgress]=useState<number|null>(null);
   const [previewBytes,setPreviewBytes]=useState<{current:number;total:number}|null>(null);
   const [previewPoster,setPreviewPoster]=useState<string|null>(null);
+  const [cacheStats,setCacheStats]=useState<{totalBytes:number;originalBytes:number;thumbBytes:number;count:number}|null>(null);
+  const [clearingCache,setClearingCache]=useState(false);
   const [dockOpen,setDockOpen]=useState(false);
   const [dismissedDock,setDismissedDock]=useState(true);
   const sessionTransfersRef=useRef<Set<string>>(new Set());
@@ -568,6 +570,28 @@ export default function Drive() {
     })().catch(error=>{if(!disposed)setPreviewError(error.message);});
     return()=>{disposed=true;};
   },[preview,gateway,serverMode]);
+
+  useEffect(() => {
+    if (dialog && 'type' in dialog && dialog.type === 'settings') {
+      void getCacheStats().then(setCacheStats);
+    }
+  }, [dialog]);
+
+  const handleClearCache = async () => {
+    try {
+      setClearingCache(true);
+      await clearMediaCache(true);
+      mediaBlobUrlCache.clear();
+      const stats = await getCacheStats();
+      setCacheStats(stats);
+      notify(t('Local media cache cleared. Files remain safe in Telegram.','লোকাল মিডিয়া ক্যাশ খালি করা হয়েছে। ফাইলগুলো টেলিগ্রামে সম্পূর্ণ নিরাপদ আছে।'));
+    } catch (e) {
+      notify(explainError(e));
+    } finally {
+      setClearingCache(false);
+    }
+  };
+
   const openDialog=(value:Dialog)=>{
     if(!readyRef.current&&['new-folder','rename','move','folder','remove','delete-folder'].includes(value.type)){
       if(serverMode){setDialog({type:'connect'});setFormError('');}return;
@@ -2066,6 +2090,34 @@ export default function Drive() {
               notify(explainError(e));
             }
           }}><Archive size={15}/>{t('Sync with Telegram','টেলিগ্রাম সিঙ্ক')}</button></div>}
+        </div>
+        <div className="setting-group">
+          <h3><Database size={17}/>{t('Device cache & limits','ডিভাইস ক্যাশ ও লিমিট')}</h3>
+          <div className="setting-row">
+            <div>
+              <strong>{t('Local storage limit: 2 GB (auto-cleaning)','লোকাল স্টোরেজ সীমা: ২ GB (অটো ক্লিন)')}</strong>
+              <p>
+                {cacheStats 
+                  ? `${formatBytes(cacheStats.originalBytes)} ${t('used by cached media','ক্যাশ করা মিডিয়া ব্যবহার করছে')} (Max 2 GB)`
+                  : t('Calculating local cache…','লোকাল ক্যাশ হিসাব হচ্ছে…')}
+              </p>
+            </div>
+            <button
+              type="button"
+              className="button button-light danger-text"
+              onClick={handleClearCache}
+              disabled={clearingCache}
+            >
+              {clearingCache ? <LoaderCircle size={14} className="spin"/> : <Trash2 size={14}/>}
+              {t('Clear Cache','ক্যাশ খালি করুন')}
+            </button>
+          </div>
+          <p className="setting-hint">
+            {t(
+              'Files stay 100% safe in your Telegram cloud. Cached media automatically cleans up when approaching 2 GB, so your device never runs out of space.',
+              'আপনার মূল ফাইলগুলো টেলিগ্রাম ক্লাউডে ১০০% নিরাপদে থাকবে। ক্যাশ ২ GB এর কাছাকাছি পৌঁছালে স্বয়ংক্রিয়ভাবে পুরোনো ক্যাশ মুছে যাবে, ফলে ডিভাইসের জায়গা কখনোই দখল হবে না।'
+            )}
+          </p>
         </div>
         <div className="setting-group"><h3><Languages size={17}/>{t('Language','ভাষা')}</h3><div className="language-options"><button className={locale==='en'?'chosen':''} onClick={()=>{setLocale('en');localStorage.setItem('cloudnest-locale','en');document.documentElement.lang='en';}}>English{locale==='en'&&<Check size={16}/>}</button><button className={locale==='bn'?'chosen':''} onClick={()=>{setLocale('bn');localStorage.setItem('cloudnest-locale','bn');document.documentElement.lang='bn';}}>বাংলা{locale==='bn'&&<Check size={16}/>}</button></div></div>
         <div className="setting-group"><h3><Archive size={17}/>{t('Take your catalog with you','আপনার ক্যাটালগ সাথে রাখুন')}</h3><p className="setting-hint">{t('Export folders, filenames, tags and metadata as JSON. This does not include original file bytes. Keep this export to preserve your virtual organization.','ফোল্ডার, নাম, ট্যাগ এবং মেটাডেটা JSON হিসেবে রপ্তানি করুন। এতে মূল ফাইল থাকে না। ভার্চুয়াল ফোল্ডার ও ট্যাগ সংরক্ষণ করতে এটি রাখুন।')}</p><div className="settings-button-row"><button className="button button-light" onClick={exportCatalog}><Download size={16}/>{t('Export catalog','ক্যাটালগ রপ্তানি')}</button>{!serverMode&&<button className="button button-light" onClick={()=>importInput.current?.click()}><Upload size={16}/>{t('Import catalog','ক্যাটালগ আমদানি')}</button>}</div></div>
