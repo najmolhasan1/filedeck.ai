@@ -1,4 +1,4 @@
-import { Catalog, DriveFile, Folder, kindFor, MAX_FILE_BYTES, Transfer } from './catalog';
+import { Catalog, DriveFile, Folder, FolderKind, kindFor, MAX_FILE_BYTES, Transfer } from './catalog';
 
 type JsonObject = Record<string, unknown>;
 type Fetcher = (input: string, init?: RequestInit) => Promise<Response>;
@@ -65,8 +65,9 @@ export function normalizeFile(value: unknown): ServerFile {
 }
 export function normalizeFolder(value: unknown, index = 0): ServerFolder {
   const raw = object(value);
+  const k = typeof raw.kind === 'string' && ['all','image','video','document','audio'].includes(raw.kind) ? raw.kind as FolderKind : undefined;
   return {id:string(raw.id),name:string(raw.name,'Untitled'),parentId:typeof raw.parent_id==='string'?raw.parent_id:null,
-    color:['green','blue','peach','purple'][index%4],version:number(raw.version,1)};
+    color:['green','blue','peach','purple'][index%4],kind:k,version:number(raw.version,1)};
 }
 export function normalizeTransfer(value: unknown): ServerTransfer {
   const raw = object(value); const state = string(raw.state,'NEEDS_ATTENTION');

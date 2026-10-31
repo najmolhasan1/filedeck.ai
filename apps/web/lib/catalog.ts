@@ -13,14 +13,29 @@ export type FolderSyncSource = {
   lastSyncedAt?: string;
   autoSync?: boolean;
 };
+export type FolderKind = 'all' | 'image' | 'video' | 'document' | 'audio';
+
 export type Folder = {
   id: string;
   name: string;
   parentId: string | null;
   color: string;
+  kind?: FolderKind;
   version?: number;
   syncSource?: FolderSyncSource;
 };
+
+export function getFolderKind(folder: Folder): FolderKind {
+  if (folder.kind && ['all','image','video','document','audio'].includes(folder.kind)) {
+    return folder.kind;
+  }
+  const lower = (folder.name || '').toLowerCase();
+  if (lower.includes('photo') || lower.includes('image') || lower.includes('picture') || lower.includes('camera') || lower.includes('ছবি')) return 'image';
+  if (lower.includes('video') || lower.includes('movie') || lower.includes('film') || lower.includes('ভিডিও')) return 'video';
+  if (lower.includes('doc') || lower.includes('pdf') || lower.includes('sheet') || lower.includes('note') || lower.includes('ডকুমেন্ট')) return 'document';
+  if (lower.includes('audio') || lower.includes('music') || lower.includes('song') || lower.includes('mp3') || lower.includes('গান') || lower.includes('অডিও')) return 'audio';
+  return 'all';
+}
 export type Transfer = {
   id: string; name: string; bytes: number;
   status: 'saving' | 'queued' | 'sending' | 'verifying' | 'waiting' | 'reconciling' | 'completed' | 'failed' | 'cancelled' | 'paused';

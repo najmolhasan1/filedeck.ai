@@ -746,3 +746,166 @@
     display: none;
   }
 }
+
+/* ==========================================================================
+   Folder Type Badges, Category Chips & Folder Cards
+   ========================================================================== */
+.folder-badge {
+  position: absolute;
+  right: -5px;
+  bottom: -4px;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 5px rgba(0, 0, 0, 0.12);
+  border: 1.5px solid #ffffff;
+  transform: rotate(6deg);
+  z-index: 3;
+}
+.folder-badge.photo {
+  background: #db8a68;
+  color: #ffffff;
+}
+.folder-badge.video {
+  background: #7d65a8;
+  color: #ffffff;
+}
+.folder-badge.document {
+  background: #507ea1;
+  color: #ffffff;
+}
+.folder-badge.audio {
+  background: #3e7b57;
+  color: #ffffff;
+}
+
+.folder-card.folder-kind-image {
+  background: #faf4ee;
+  border-color: #f2e6dc;
+}
+.folder-card.folder-kind-image .folder-card-icon {
+  color: #dbbba8;
+}
+.folder-card.folder-kind-video {
+  background: #f6f2f8;
+  border-color: #ede5f1;
+}
+.folder-card.folder-kind-video .folder-card-icon {
+  color: #cbb8d9;
+}
+.folder-card.folder-kind-document {
+  background: #eff5f7;
+  border-color: #e0ecf0;
+}
+.folder-card.folder-kind-document .folder-card-icon {
+  color: #a4c6d4;
+}
+.folder-card.folder-kind-audio {
+  background: #f3f7ee;
+  border-color: #e4ecdc;
+}
+.folder-card.folder-kind-audio .folder-card-icon {
+  color: #b6cca0;
+}
+
+.folder-meta-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 6px;
+  gap: 4px;
+}
+.folder-meta-row > span:first-child {
+  font-size: 9px;
+  color: #a4ad96;
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.folder-kind-tag {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  text-transform: uppercase;
+  margin-left: auto;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.folder-kind-tag.image {
+  background: #faebe4;
+  color: #b5623e;
+}
+.folder-kind-tag.video {
+  background: #f1ecf7;
+  color: #634791;
+}
+.folder-kind-tag.document {
+  background: #e8f1f7;
+  color: #3b6b8f;
+}
+.folder-kind-tag.audio {
+  background: #e7f3eb;
+  color: #2b6c46;
+}
+
+.folder-type-selector {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  margin-bottom: 6px;
+}
+.folder-type-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: #f3f6ee;
+  border: 1px solid #dfe6d5;
+  color: #6d7f60;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.folder-type-chip:hover {
+  background: #eaf1e3;
+  border-color: #cbd8be;
+}
+.folder-type-chip.selected {
+  background: #345a44;
+  color: #ffffff;
+  border-color: #345a44;
+  box-shadow: 0 2px 6px rgba(52, 90, 68, 0.25);
+}
+.folder-type-chip.photo.selected {
+  background: #c86f4b;
+  border-color: #c86f4b;
+  box-shadow: 0 2px 6px rgba(200, 111, 75, 0.25);
+}
+.folder-type-chip.video.selected {
+  background: #6a4f96;
+  border-color: #6a4f96;
+  box-shadow: 0 2px 6px rgba(106, 79, 150, 0.25);
+}
+.folder-type-chip.document.selected {
+  background: #3f6e8f;
+  border-color: #3f6e8f;
+  box-shadow: 0 2px 6px rgba(63, 110, 143, 0.25);
+}
+.folder-type-chip.audio.selected {
+  background: #2f6946;
+  border-color: #2f6946;
+  box-shadow: 0 2px 6px rgba(47, 105, 70, 0.25);
+}

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Cloud, CloudUpload, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Star, Tag, Trash2, Upload, Volume2, VolumeX, Wifi, X } from 'lucide-react';
-import { canMoveFolder, Catalog, DriveFile, FileKind, Folder, Transfer, formatBytes, initialCatalog, kindFor, MAX_FILE_BYTES, safePreview } from '@/lib/catalog';
+import { canMoveFolder, Catalog, DriveFile, FileKind, Folder, FolderKind, getFolderKind, Transfer, formatBytes, initialCatalog, kindFor, MAX_FILE_BYTES, safePreview } from '@/lib/catalog';
 import { commitCatalog, getOriginal, loadCatalog, saveCatalog, saveOriginal } from '@/lib/storage';
 import { APIError, ServerGateway, type ServerUser, type UploadDescriptor } from '@/lib/server';
 import { telegramGateway, type TelegramUser } from '@/lib/telegram-client';
@@ -113,6 +113,7 @@ export default function Drive() {
   const [menu,setMenu]=useState<string|null>(null);
   const [hero,setHero]=useState(()=>!hasInitialSession);
   const [dragging,setDragging]=useState(false);
+  const [folderKindChoice,setFolderKindChoice]=useState<FolderKind>('all');
   const [formValue,setFormValue]=useState('');
   const [formError,setFormError]=useState('');
   const [savingForm,setSavingForm]=useState(false);
@@ -473,14 +474,44 @@ export default function Drive() {
     if(!readyRef.current&&['new-folder','rename','move','folder','remove'].includes(value.type)){
       if(serverMode){setDialog({type:'connect'});setFormError('');}return;
     }
-    setDialog(value);setFormValue(value.type==='rename'?value.file.name:value.type==='folder'?value.folder.name:'');setFormError('');setMoveTarget('');setMenu(null);
+    setDialog(value);
+    setFormValue(value.type==='rename'?value.file.name:value.type==='folder'?value.folder.name:'');
+    setFormError('');
+    setMoveTarget('');
+    setMenu(null);
+    if(value.type==='new-folder'){
+      if(view==='photos') setFolderKindChoice('image');
+      else if(view==='videos') setFolderKindChoice('video');
+      else if(view==='documents') setFolderKindChoice('document');
+      else if(view==='audio') setFolderKindChoice('audio');
+      else if(currentFolder?.kind) setFolderKindChoice(currentFolder.kind);
+      else setFolderKindChoice('all');
+    } else if(value.type==='folder'){
+      setFolderKindChoice(getFolderKind(value.folder));
+    }
   };
   const navigate=(next:View,folder:string|null=null)=>{setView(next);setFolderId(folder);setSearch('');setKind('all');setDateFilter('all');setSelected(new Set());setMenu(null);setMobileNav(false);};
   const activeFiles=catalog.files.filter(file=>!file.trashedAt);
   const currentFolder=catalog.folders.find(folder=>folder.id===folderId);
   const breadcrumbs:Folder[]=[];let ancestor=currentFolder;
   while(ancestor&&breadcrumbs.length<10){breadcrumbs.unshift(ancestor);ancestor=catalog.folders.find(folder=>folder.id===ancestor?.parentId);}
-  const displayedFolders=catalog.folders.filter(folder=>folder.parentId===folderId&&(!search||folder.name.toLowerCase().includes(search.toLowerCase())));
+  const displayedFolders=useMemo(()=>{
+    return catalog.folders.filter(folder=>{
+      if(folderId){
+        if(folder.parentId!==folderId)return false;
+      }else{
+        if(folder.parentId!==null)return false;
+        const fk=getFolderKind(folder);
+        if(view==='photos'&&fk!=='image')return false;
+        if(view==='videos'&&fk!=='video')return false;
+        if(view==='documents'&&fk!=='document')return false;
+        if(view==='audio'&&fk!=='audio')return false;
+        if(!['all','photos','videos','documents','audio'].includes(view))return false;
+      }
+      const query=search.toLowerCase();
+      return !query||folder.name.toLowerCase().includes(query);
+    });
+  },[catalog.folders,folderId,view,search]);
   const visible=useMemo(()=>catalog.files.filter(file=>{
     if(Boolean(file.trashedAt)!==(view==='trash'))return false;
     if(folderId&&file.folderId!==folderId)return false;
@@ -1096,15 +1127,19 @@ export default function Drive() {
     setSavingForm(true);
     try{
       if(dialog.type==='new-folder'){
+        const chosenKind = folderKindChoice;
+        const chosenColor = chosenKind === 'image' ? 'peach' : chosenKind === 'video' ? 'purple' : chosenKind === 'document' ? 'blue' : chosenKind === 'audio' ? 'green' : ['green','blue','peach','purple'][catalog.folders.length%4];
         if(serverMode)await runServer(()=>gateway.createFolder(name,folderId));
-        else await setCatalog(previous=>({...previous,folders:[...previous.folders,{id:crypto.randomUUID(),name,parentId:folderId,color:['green','blue','peach','purple'][previous.folders.length%4]}]}));
+        else await setCatalog(previous=>({...previous,folders:[...previous.folders,{id:crypto.randomUUID(),name,parentId:folderId,color:chosenColor,kind:chosenKind}]}));
         notify(t('Your new folder is ready.','নতুন ফোল্ডার তৈরি হয়েছে।'));
       }
       if(dialog.type==='rename')await mutateFiles([dialog.file.id],file=>({...file,name}));
       if(dialog.type==='folder'){
         const nextParent=moveTarget==='__root'?null:moveTarget||dialog.folder.parentId;
+        const chosenKind = folderKindChoice;
+        const chosenColor = chosenKind === 'image' ? 'peach' : chosenKind === 'video' ? 'purple' : chosenKind === 'document' ? 'blue' : chosenKind === 'audio' ? 'green' : dialog.folder.color;
         if(serverMode)await runServer(()=>gateway.patchFolder(dialog.folder,{name,parentId:nextParent}));
-        else await setCatalog(previous=>({...previous,folders:previous.folders.map(folder=>folder.id===dialog.folder.id?{...folder,name,parentId:nextParent}:folder)}));
+        else await setCatalog(previous=>({...previous,folders:previous.folders.map(folder=>folder.id===dialog.folder.id?{...folder,name,parentId:nextParent,kind:chosenKind,color:chosenColor}:folder)}));
       }
       if(dialog.type==='move'){await mutateFiles(dialog.ids,file=>({...file,folderId:moveTarget||null}));setSelected(new Set());notify(t('Files moved. Originals stay unchanged.','ফাইল সরানো হয়েছে। মূল ফাইল অপরিবর্তিত আছে।'));}
       closeDialog();
@@ -1210,9 +1245,64 @@ export default function Drive() {
         {serverMode&&serverError&&<div className="server-status-notice" role="status"><div><Info size={19}/><span>{serverError}</span></div><button className="button primary" onClick={()=>openDialog({type:'connect'})}>{t('Connect Telegram','টেলিগ্রাম যুক্ত করুন')}<ArrowRight size={15}/></button></div>}
         {serverMode&&syncJob&&<div className="recovery-status" role="status"><Archive size={18}/><div><strong>{t('Telegram recovery','টেলিগ্রাম রিকভারি')} · {String(syncJob.state||'QUEUED')}</strong><span>{Number(syncJob.scanned_files||0)} {t('scanned','স্ক্যান হয়েছে')} · {Number(syncJob.imported_files||0)} {t('imported','আমদানি হয়েছে')} · {Number(syncJob.skipped_files||0)} {t('already known or removed','আগে থেকেই আছে বা সরানো হয়েছে')}{syncJob.error_code?` · ${String(syncJob.error_code)}`:''}{syncJob.status_error?` · ${String(syncJob.status_error)}`:''}</span></div><button className="icon-button" aria-label="Hide recovery status" onClick={()=>setSyncJob(null)}><X size={16}/></button></div>}
         {isDefault&&hero&&<section className="welcome-banner"><div className="banner-copy"><span className="banner-pill"><Sparkles size={13}/>{t('100% SECURE & UNLIMITED','১০০% নিরাপদ ও আনলিমিটেড')}</span><h2>{t('Your Personal Storage Drive.','আপনার নিজস্ব পার্সোনাল ড্রাইভ।')}<br/>{t('100% Secure & Unlimited Space.','১০০% নিরাপদ ও আনলিমিটেড স্টোরেজ।')}</h2><p>{t('Store all your photos, videos, and documents with zero limits.','কোনো স্টোরেজ লিমিট বা মাসিক ফি ছাড়াই নিরাপদে রাখুন আপনার সব ফাইল।')}<br/>{t('Directly connected to your Telegram with complete privacy.','সরাসরি আপনার টেলিগ্রাম অ্যাকাউন্টে সংরক্ষিত, শতভাগ ব্যক্তিগত ও সুরক্ষিত।')}</p><button onClick={()=>openDialog({type:'connect'})}>{t('Connect your drive','আপনার ড্রাইভ যুক্ত করুন')}<ArrowRight size={15}/></button></div><div className="banner-art" aria-hidden="true"><div className="orbit orbit-one"/><div className="orbit orbit-two"/><div className="art-cloud"><Cloud size={79} strokeWidth={1.1}/><div className="cloud-spark">✦</div></div><div className="floating-file float-photo"><div><Image size={28}/></div><span>little moments.jpg</span></div><div className="floating-file float-doc"><div><FileText size={26}/></div><span>the next big idea.pdf</span></div><div className="art-star star-one">✦</div><div className="art-star star-two">✧</div><span className="art-dot dot-one"/><span className="art-dot dot-two"/></div><button className="banner-close" aria-label="Dismiss welcome banner" onClick={()=>setHero(false)}><X size={17}/></button></section>}
-        {folderId&&<div className="folder-breadcrumb"><button onClick={()=>navigate('all')}>{t('My drive','আমার ড্রাইভ')}</button>{breadcrumbs.map(folder=><span key={folder.id}><ChevronRight size={14}/><button onClick={()=>navigate('all',folder.id)}>{folder.name}</button></span>)}</div>}
+        {folderId&&<div className="folder-breadcrumb"><button onClick={()=>navigate(view)}>{view==='all'?t('My drive','আমার ড্রাইভ'):t(...viewLabels[view])}</button>{breadcrumbs.map(folder=><span key={folder.id}><ChevronRight size={14}/><button onClick={()=>navigate(view,folder.id)}>{folder.name}</button></span>)}</div>}
         {currentFolder?.syncSource&&<div className="folder-sync-banner"><div className="sync-banner-info"><Smartphone size={18}/><div><strong>{t(`Auto-sync active: ${currentFolder.syncSource.pathName}`,`অটো-সিঙ্ক সক্রিয়: ${currentFolder.syncSource.pathName}`)}</strong><span>{currentFolder.syncSource.lastSyncedAt?t(`Last checked: ${formatDate(currentFolder.syncSource.lastSyncedAt)}`,`সর্বশেষ স্ক্যান: ${formatDate(currentFolder.syncSource.lastSyncedAt)}`):t('Ready to sync','সিঙ্কের জন্য প্রস্তুত')}</span></div></div><button className="button button-light" onClick={()=>runFolderSync(currentFolder)} disabled={isSyncingFolder===currentFolder.id}><RefreshCw size={13} className={isSyncingFolder===currentFolder.id?'spin':''}/>{t('Sync now','এখনই সিঙ্ক')}</button></div>}
-        {(view==='all'&&(displayedFolders.length>0||!search))&&<section className="folders-section"><div className="section-heading"><h2>{currentFolder?t('Folders','ফোল্ডার'):t('Your folders','আপনার ফোল্ডার')}<span>{displayedFolders.length.toString().padStart(2,'0')}</span></h2><button className="text-button" onClick={()=>openDialog({type:'new-folder'})}><Plus size={14}/>{t('Create new','নতুন তৈরি')}</button></div><div className="folder-grid">{displayedFolders.map(folder=><div className={`folder-card ${folder.color}`} key={folder.id}><button className="folder-open" onClick={()=>navigate('all',folder.id)}><div className="folder-card-icon"><FolderIcon size={29} strokeWidth={1.2} fill="currentColor"/><span><FolderIcon size={29} strokeWidth={1.2} fill="currentColor"/></span></div><strong>{folder.name}</strong><span>{activeFiles.filter(file=>file.folderId===folder.id).length} {t('files','ফাইল')}<span className="folder-size">{formatBytes(activeFiles.filter(file=>file.folderId===folder.id).reduce((sum,file)=>sum+file.bytes,0))}</span></span>{folder.syncSource&&<span className="folder-sync-badge"><Smartphone size={10}/><span>{folder.syncSource.pathName}</span></span>}</button><button className="folder-menu icon-button" aria-label={`Manage ${folder.name}`} onClick={()=>openDialog({type:'folder',folder})}><Ellipsis size={18}/></button><span className="folder-corner"><ArrowRight size={15}/></span></div>)}</div></section>}
+        {((['all','photos','videos','documents','audio'].includes(view)) && (displayedFolders.length>0 || (view==='all' && !search && !folderId))) && (
+          <section className="folders-section">
+            <div className="section-heading">
+              <h2>
+                {currentFolder ? t('Folders','ফোল্ডার') :
+                 view==='photos' ? t('Photo folders','ছবির ফোল্ডার') :
+                 view==='videos' ? t('Video folders','ভিডিওর ফোল্ডার') :
+                 view==='documents' ? t('Document folders','ডকুমেন্টের ফোল্ডার') :
+                 view==='audio' ? t('Audio folders','অডিও ফোল্ডার') :
+                 t('Your folders','আপনার ফোল্ডার')}
+                <span>{displayedFolders.length.toString().padStart(2,'0')}</span>
+              </h2>
+              <button className="text-button" onClick={()=>openDialog({type:'new-folder'})}>
+                <Plus size={14}/>{t('Create new','নতুন তৈরি')}
+              </button>
+            </div>
+            <div className="folder-grid">
+              {displayedFolders.map(folder => {
+                const folderKind = getFolderKind(folder);
+                const folderFiles = activeFiles.filter(file => file.folderId === folder.id);
+                const folderBytes = folderFiles.reduce((sum, file) => sum + file.bytes, 0);
+                return (
+                  <div className={`folder-card ${folder.color || 'green'} folder-kind-${folderKind}`} key={folder.id}>
+                    <button className="folder-open" onClick={()=>navigate(view, folder.id)}>
+                      <div className={`folder-card-icon ${folderKind}`}>
+                        <FolderIcon size={29} strokeWidth={1.2} fill="currentColor"/>
+                        <span><FolderIcon size={29} strokeWidth={1.2} fill="currentColor"/></span>
+                        {folderKind === 'image' && <span className="folder-badge photo" title={t('Photos','ছবি')}><Image size={11} strokeWidth={2.2}/></span>}
+                        {folderKind === 'video' && <span className="folder-badge video" title={t('Videos','ভিডিও')}><Film size={11} strokeWidth={2.2}/></span>}
+                        {folderKind === 'document' && <span className="folder-badge document" title={t('Documents','ডকুমেন্ট')}><FileText size={11} strokeWidth={2.2}/></span>}
+                        {folderKind === 'audio' && <span className="folder-badge audio" title={t('Audio','অডিও')}><Music2 size={11} strokeWidth={2.2}/></span>}
+                      </div>
+                      <strong>{folder.name}</strong>
+                      <div className="folder-meta-row">
+                        <span>{folderFiles.length} {t('files','ফাইল')}<span className="folder-size">{formatBytes(folderBytes)}</span></span>
+                        {folderKind !== 'all' && (
+                          <span className={`folder-kind-tag ${folderKind}`}>
+                            {folderKind === 'image' ? t('Photos','ছবি') :
+                             folderKind === 'video' ? t('Videos','ভিডিও') :
+                             folderKind === 'document' ? t('Docs','ডকুমেন্ট') :
+                             t('Audio','অডিও')}
+                          </span>
+                        )}
+                      </div>
+                      {folder.syncSource && <span className="folder-sync-badge"><Smartphone size={10}/><span>{folder.syncSource.pathName}</span></span>}
+                    </button>
+                    <button className="folder-menu icon-button" aria-label={`Manage ${folder.name}`} onClick={()=>openDialog({type:'folder',folder})}>
+                      <Ellipsis size={18}/>
+                    </button>
+                    <span className="folder-corner"><ArrowRight size={15}/></span>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
         {view==='transfers'?<section className="files-section">
           <div className="section-heading"><h2>{t('Transfer activity','ট্রান্সফারের অবস্থা')}<span>{transfers.length}</span></h2><button className="text-button" onClick={clearFinished}>{t('Clear finished','সম্পন্নগুলো সরান')}</button></div>
           <div className="local-notice"><Info size={17}/>{serverMode?t('An upload is complete only after Telegram confirms its message. Received bytes and queued transfers are still in progress.','টেলিগ্রাম মেসেজ নিশ্চিত করার পরই আপলোড সম্পন্ন হয়। বাইট গ্রহণ বা কিউতে থাকা মানে কাজ এখনো চলছে।'):t('Transfers connect directly to Telegram MTProto over WebSockets. Originals are stored directly in your Saved Messages.','ট্রান্সফার ব্রাউজার থেকে সরাসরি টেলিগ্রাম MTProto ওয়েবসকেটে সংযুক্ত। আপনার সেভড মেসেজে ফাইল সংরক্ষিত হয়।')}</div>
@@ -1637,7 +1727,7 @@ export default function Drive() {
       }}
     />
     {dialog&&<Modal title={dialog.type==='new-folder'?t('A new little space','নতুন একটি জায়গা'):dialog.type==='rename'?t('Rename file','ফাইলের নাম পরিবর্তন'):dialog.type==='move'?t('Move to a folder','ফোল্ডারে সরান'):dialog.type==='folder'?t('Manage folder','ফোল্ডার পরিচালনা'):dialog.type==='remove'?t('Remove from this workspace?','ওয়ার্কস্পেস থেকে সরাবেন?'):dialog.type==='connect'?t('Your Telegram, connected.','আপনার টেলিগ্রাম যুক্ত করুন।'):dialog.type==='settings'?t('Make yourself at home','আপনার মতো করে সাজান'):dialog.type==='security'?t('A clear view of your storage','আপনার স্টোরেজ সম্পর্কে'):dialog.type==='disconnect'?t('Disconnect Telegram?','টেলিগ্রাম বিচ্ছিন্ন করবেন?'):dialog.type==='recovery'?t('Recover from Telegram?','টেলিগ্রাম থেকে রিকভার করবেন?'):t('A little help getting started','শুরু করার নির্দেশনা')} onClose={closeDialog} wide={dialog.type==='settings'}>
-      {(['new-folder','rename','move','folder'] as string[]).includes(dialog.type)&&<form onSubmit={submitForm}><p className="modal-description">{dialog.type==='rename'?t('This changes the display name in your drive. The original attachment keeps its name.','এটি ড্রাইভে দেখানো নাম বদলায়। মূল ফাইলের নাম বদলায় না।'):dialog.type==='move'?t('Organization changes here. Your original file stays just as it is.','ফাইল গুছিয়ে রাখুন। মূল ফাইল যেমন আছে তেমনই থাকবে।'):t('Give your files a place to belong. Folders stay inside your filedeck.ai catalog.','ফাইলগুলো গুছিয়ে রাখুন। ফোল্ডার filedeck.ai ক্যাটালগে থাকে।')}</p>{dialog.type!=='move'&&<label className="field-label">{t('Name','নাম')}<input autoFocus value={formValue} onChange={event=>setFormValue(event.target.value)} placeholder={t('Something worth keeping','মনে রাখার মতো কিছু')} maxLength={255} required/></label>}{(dialog.type==='move'||dialog.type==='folder')&&<label className="field-label">{t('Destination folder','যে ফোল্ডারে সরাবেন')}<select value={moveTarget} onChange={event=>setMoveTarget(event.target.value)}><option value="">{dialog.type==='folder'?t('Keep current location','বর্তমান অবস্থানে রাখুন'):t('My drive (root)','আমার ড্রাইভ (মূল)')}</option>{dialog.type==='folder'&&<option value="__root">{t('My drive (root)','আমার ড্রাইভ (মূল)')}</option>}{catalog.folders.filter(folder=>dialog.type!=='folder'||canMoveFolder(catalog.folders,dialog.folder.id,folder.id)).map(folder=><option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label>}{formError&&<p className="form-error" role="alert">{formError}</p>}<div className="modal-actions"><button type="button" className="button button-light" onClick={closeDialog}>{t('Cancel','বাতিল')}</button><button type="submit" disabled={savingForm} className="button primary">{dialog.type==='new-folder'?t('Create folder','ফোল্ডার তৈরি'):dialog.type==='move'?t('Move files','ফাইল সরান'):t('Save changes','সেভ করুন')}<ArrowRight size={15}/></button></div>{dialog.type==='folder'&&<div className="folder-sync-section">
+      {(['new-folder','rename','move','folder'] as string[]).includes(dialog.type)&&<form onSubmit={submitForm}><p className="modal-description">{dialog.type==='rename'?t('This changes the display name in your drive. The original attachment keeps its name.','এটি ড্রাইভে দেখানো নাম বদলায়। মূল ফাইলের নাম বদলায় না।'):dialog.type==='move'?t('Organization changes here. Your original file stays just as it is.','ফাইল গুছিয়ে রাখুন। মূল ফাইল যেমন আছে তেমনই থাকবে।'):dialog.type==='new-folder'&&view==='photos'?t('Create a dedicated photo album folder. It will appear here and in My drive.','একটি ফটো অ্যালবাম ফোল্ডার তৈরি করুন। এটি এখানে এবং মাই ড্রাইভে থাকবে।'):dialog.type==='new-folder'&&view==='videos'?t('Create a video collection folder. It will appear here and in My drive.','একটি ভিডিও ফোল্ডার তৈরি করুন। এটি এখানে এবং মাই ড্রাইভে থাকবে।'):dialog.type==='new-folder'&&view==='documents'?t('Create a document folder. It will appear here and in My drive.','একটি ডকুমেন্ট ফোল্ডার তৈরি করুন। এটি এখানে এবং মাই ড্রাইভে থাকবে।'):dialog.type==='new-folder'&&view==='audio'?t('Create an audio playlist folder. It will appear here and in My drive.','একটি অডিও ফোল্ডার তৈরি করুন। এটি এখানে এবং মাই ড্রাইভে থাকবে।'):t('Give your files a place to belong. Folders stay inside your filedeck.ai catalog.','ফাইলগুলো গুছিয়ে রাখুন। ফোল্ডার filedeck.ai ক্যাটালগে থাকে।')}</p>{(dialog.type==='new-folder'||dialog.type==='folder')&&<label className="field-label">{t('Folder type & category','ফোল্ডারের ধরন ও ক্যাটাগরি')}<div className="folder-type-selector"><button type="button" className={`folder-type-chip ${folderKindChoice==='all'?'selected':''}`} onClick={()=>setFolderKindChoice('all')}><FolderIcon size={14}/><span>{t('General','সাধারণ')}</span></button><button type="button" className={`folder-type-chip photo ${folderKindChoice==='image'?'selected':''}`} onClick={()=>setFolderKindChoice('image')}><Image size={14}/><span>{t('Photos','ছবি')}</span></button><button type="button" className={`folder-type-chip video ${folderKindChoice==='video'?'selected':''}`} onClick={()=>setFolderKindChoice('video')}><Film size={14}/><span>{t('Videos','ভিডিও')}</span></button><button type="button" className={`folder-type-chip document ${folderKindChoice==='document'?'selected':''}`} onClick={()=>setFolderKindChoice('document')}><FileText size={14}/><span>{t('Docs','ডকুমেন্ট')}</span></button><button type="button" className={`folder-type-chip audio ${folderKindChoice==='audio'?'selected':''}`} onClick={()=>setFolderKindChoice('audio')}><Music2 size={14}/><span>{t('Audio','অডিও')}</span></button></div></label>}{dialog.type!=='move'&&<label className="field-label">{t('Name','নাম')}<input autoFocus value={formValue} onChange={event=>setFormValue(event.target.value)} placeholder={t('Something worth keeping','মনে রাখার মতো কিছু')} maxLength={255} required/></label>}{(dialog.type==='move'||dialog.type==='folder')&&<label className="field-label">{t('Destination folder','যে ফোল্ডারে সরাবেন')}<select value={moveTarget} onChange={event=>setMoveTarget(event.target.value)}><option value="">{dialog.type==='folder'?t('Keep current location','বর্তমান অবস্থানে রাখুন'):t('My drive (root)','আমার ড্রাইভ (মূল)')}</option>{dialog.type==='folder'&&<option value="__root">{t('My drive (root)','আমার ড্রাইভ (মূল)')}</option>}{catalog.folders.filter(folder=>dialog.type!=='folder'||canMoveFolder(catalog.folders,dialog.folder.id,folder.id)).map(folder=><option key={folder.id} value={folder.id}>{getFolderKind(folder)==='image'?'📷 ':getFolderKind(folder)==='video'?'🎬 ':getFolderKind(folder)==='document'?'📄 ':getFolderKind(folder)==='audio'?'🎵 ':''}{folder.name}</option>)}</select></label>}{formError&&<p className="form-error" role="alert">{formError}</p>}<div className="modal-actions"><button type="button" className="button button-light" onClick={closeDialog}>{t('Cancel','বাতিল')}</button><button type="submit" disabled={savingForm} className="button primary">{dialog.type==='new-folder'?t('Create folder','ফোল্ডার তৈরি'):dialog.type==='move'?t('Move files','ফাইল সরান'):t('Save changes','সেভ করুন')}<ArrowRight size={15}/></button></div>{dialog.type==='folder'&&<div className="folder-sync-section">
   <strong><Smartphone size={16}/>{t('Device folder sync & backup','ডিভাইস ফোল্ডার সিঙ্ক ও ব্যাকআপ')}</strong>
   <p>{t('Connect a native folder from your phone or computer. Newly added photos and files will automatically back up to this Filedeck folder in Telegram.','আপনার ফোন বা কম্পিউটারের একটি ফোল্ডার যুক্ত করুন। নতুন ছবি বা ফাইল ড্রাইভের এই ফোল্ডারে স্বয়ংক্রিয়ভাবে ব্যাকআপ হয়ে যাবে।')}</p>
   {dialog.folder.syncSource?(
