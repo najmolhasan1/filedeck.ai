@@ -2,8 +2,12 @@ package ai.filedeck.app;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.net.Uri;
+import android.os.Build;
 import android.util.Base64;
+import android.util.Size;
 import androidx.activity.result.ActivityResult;
 import androidx.documentfile.provider.DocumentFile;
 import com.getcapacitor.JSArray;
@@ -13,6 +17,7 @@ import com.getcapacitor.PluginCall;
 import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 
 @CapacitorPlugin(name = "FolderSync")
@@ -149,6 +154,48 @@ public class FolderSyncPlugin extends Plugin {
             call.resolve(ret);
         } catch (Exception e) {
             call.reject("Error reading file part: " + e.getMessage());
+        }
+    }
+
+    @PluginMethod
+    public void getThumbnail(PluginCall call) {
+        String uriStr = call.getString("uri");
+        if (uriStr == null || uriStr.isEmpty()) {
+            call.reject("Missing uri");
+            return;
+        }
+
+        try {
+            Uri fileUri = Uri.parse(uriStr);
+            Bitmap bitmap = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                try {
+                    bitmap = getContext().getContentResolver().loadThumbnail(fileUri, new Size(320, 320), null);
+                } catch (Exception ignored) {}
+            }
+            if (bitmap == null) {
+                InputStream is = getContext().getContentResolver().openInputStream(fileUri);
+                if (is != null) {
+                    BitmapFactory.Options opts = new BitmapFactory.Options();
+                    opts.inSampleSize = 4;
+                    bitmap = BitmapFactory.decodeStream(is, null, opts);
+                    is.close();
+                }
+            }
+
+            if (bitmap != null) {
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
+                byte[] bytes = baos.toByteArray();
+                String base64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
+                JSObject ret = new JSObject();
+                ret.put("data", base64);
+                call.resolve(ret);
+                return;
+            }
+            call.reject("Could not create thumbnail");
+        } catch (Exception e) {
+            call.reject("Failed to generate thumbnail: " + e.getMessage());
         }
     }
 }

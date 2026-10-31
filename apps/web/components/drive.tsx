@@ -8,7 +8,8 @@ import { APIError, ServerGateway, type ServerUser, type UploadDescriptor } from 
 import { telegramGateway, type TelegramUser } from '@/lib/telegram-client';
 import ConnectPanel from './connect-panel';
 import { parseCatalogImport } from '@/lib/catalog-import';
-import { pickFolderForSync, listFilesInFolder, registerWebDirectoryHandle } from '@/lib/folder-sync';
+import { pickFolderForSync, listFilesInFolder, registerWebDirectoryHandle, getNativeThumbnail } from '@/lib/folder-sync';
+import { Capacitor } from '@capacitor/core';
 
 const thumbnailCache = new Map<string, string>();
 const videoFrameCache = new Map<string, string>();
@@ -419,6 +420,34 @@ export default function Drive() {
       }).catch(()=>{});
     }
   },[]);
+  useEffect(() => {
+    if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw-stream.js').catch(err => {
+        console.warn('Could not register stream service worker:', err);
+      });
+
+      const messageListener = async (event: MessageEvent) => {
+        if (event.data && event.data.type === 'FETCH_STREAM_CHUNK') {
+          const { msgId, offset, length } = event.data;
+          const port = event.ports && event.ports[0];
+          if (!port) return;
+          try {
+            const chunk = await telegramGateway.getFileChunk(msgId, offset, length);
+            const arrayBuffer = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
+            port.postMessage({ buffer: arrayBuffer }, [arrayBuffer]);
+          } catch (err: unknown) {
+            const errorMsg = err instanceof Error ? err.message : 'Chunk error';
+            port.postMessage({ error: errorMsg });
+          }
+        }
+      };
+
+      navigator.serviceWorker.addEventListener('message', messageListener);
+      return () => {
+        navigator.serviceWorker.removeEventListener('message', messageListener);
+      };
+    }
+  }, []);
   useEffect(()=>{
     if(!account?.telegram_connected)return;
     const syncFolders=catalogRef.current.folders.filter(f=>f.syncSource?.autoSync);
@@ -541,6 +570,17 @@ export default function Drive() {
         return;
       }
 
+      // Check if file has localUri on native mobile platform (0 ms instant local playback!)
+      if (Capacitor.isNativePlatform() && preview.localUri) {
+        try {
+          const converted = Capacitor.convertFileSrc(preview.localUri);
+          if (converted && !disposed) {
+            setPreviewUrl(converted);
+            return;
+          }
+        } catch {}
+      }
+
       // Check IndexedDB original
       const cached = await getOriginal(preview.originalId || preview.id);
       if (cached && !disposed) {
@@ -551,9 +591,9 @@ export default function Drive() {
         return;
       }
 
-      // Check IndexedDB cached thumbnail
+      // Check IndexedDB cached thumbnail (skip corrupt stripped thumbs < 1500 bytes)
       const cachedThumb = await getOriginal('thumb-' + preview.id);
-      if (cachedThumb && !disposed) {
+      if (cachedThumb && !disposed && cachedThumb.size >= 1500) {
         const thumbUrl = URL.createObjectURL(cachedThumb);
         if (isVideo) {
           setPreviewPoster(thumbUrl);
@@ -570,26 +610,37 @@ export default function Drive() {
         }
 
         // Quick thumbnail pre-fetch for instant response (~30-50ms)
-        if (kind === 'image' && !thumbnailCache.has(preview.id) && !cachedThumb) {
+        if (kind === 'image' && !thumbnailCache.has(preview.id) && (!cachedThumb || cachedThumb.size < 1500)) {
           try {
             const thumbBlob = await telegramGateway.downloadThumbnail(preview.remoteMessageId);
-            if (thumbBlob && !disposed) {
+            if (thumbBlob && !disposed && thumbBlob.size >= 1500) {
               void saveOriginal('thumb-' + preview.id, thumbBlob);
               const thumbUrl = URL.createObjectURL(thumbBlob);
               thumbnailCache.set(preview.id, thumbUrl);
               setPreviewUrl(thumbUrl);
             }
           } catch {}
-        } else if (isVideo && !videoFrameCache.has(preview.id) && !cachedThumb) {
+        } else if (isVideo && !videoFrameCache.has(preview.id) && (!cachedThumb || cachedThumb.size < 1500)) {
           try {
             const thumbBlob = await telegramGateway.downloadThumbnail(preview.remoteMessageId);
-            if (thumbBlob && !disposed) {
+            if (thumbBlob && !disposed && thumbBlob.size >= 1500) {
               void saveOriginal('thumb-' + preview.id, thumbBlob);
               const thumbUrl = URL.createObjectURL(thumbBlob);
               videoFrameCache.set(preview.id, thumbUrl);
               setPreviewPoster(thumbUrl);
             }
           } catch {}
+        }
+
+        // For Videos: If Service Worker is active, stream frame-by-frame on-demand like Google Drive!
+        if (isVideo) {
+          if (typeof window !== 'undefined' && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
+            const streamUrl = `/stream-media?msgId=${preview.remoteMessageId}&size=${preview.bytes}&mime=${encodeURIComponent(preview.mime || 'video/mp4')}`;
+            if (!disposed) {
+              setPreviewUrl(streamUrl);
+              return;
+            }
+          }
         }
 
         // Download full file with dedicated connection bandwidth
@@ -1094,6 +1145,26 @@ export default function Drive() {
         return;
       }
 
+      // Link localUri to any existing files in this folder on native platform
+      if (items.length > 0) {
+        const itemUriMap = new Map<string, string>();
+        for (const it of items) {
+          if (it.uri) itemUriMap.set(it.name, it.uri);
+        }
+        let catalogNeedsUpdate = false;
+        const updatedFileList = catalogRef.current.files.map(f => {
+          if (f.folderId === folder.id && !f.localUri && itemUriMap.has(f.originalName || f.name)) {
+            catalogNeedsUpdate = true;
+            return { ...f, localUri: itemUriMap.get(f.originalName || f.name) };
+          }
+          return f;
+        });
+        if (catalogNeedsUpdate) {
+          updateCatalogState({ ...catalogRef.current, files: updatedFileList });
+          void saveCatalog({ ...catalogRef.current, files: updatedFileList });
+        }
+      }
+
       const existingSignatures = new Set(
         catalogRef.current.files
           .filter(f => f.folderId === folder.id && !f.trashedAt)
@@ -1167,10 +1238,16 @@ export default function Drive() {
                 })
               : upload([item.file]));
           } else if (item.uri) {
-            await telegramGateway.uploadNative(
+            let thumbBlob: Blob | null = null;
+            try {
+              thumbBlob = await getNativeThumbnail(item.uri);
+            } catch {}
+
+            const uploadRes = await telegramGateway.uploadNative(
               { name: item.name, size: item.size, mimeType: item.mimeType, uri: item.uri },
               {
                 folderId: folder.id,
+                thumbBlob: thumbBlob || undefined,
                 onProgress: p => {
                   const tr: Transfer = {
                     ...initialTransfer,
@@ -1186,6 +1263,13 @@ export default function Drive() {
                 }
               }
             );
+
+            if (thumbBlob && uploadRes?.file?.id) {
+              void saveOriginal('thumb-' + uploadRes.file.id, thumbBlob);
+              const thumbUrl = URL.createObjectURL(thumbBlob);
+              if (initialTransfer.kind === 'video') videoFrameCache.set(uploadRes.file.id, thumbUrl);
+              else thumbnailCache.set(uploadRes.file.id, thumbUrl);
+            }
           }
 
           count++;
@@ -2394,6 +2478,22 @@ function LocalThumbnail({file}:{file:DriveFile}) {
     (async()=>{
       try {
         setLoading(true);
+
+        // 1. If file has localUri on native mobile platform, load directly from local device storage!
+        if (Capacitor.isNativePlatform() && file.localUri) {
+          try {
+            const converted = Capacitor.convertFileSrc(file.localUri);
+            if (converted && !disposed) {
+              if (file.kind === 'image') {
+                thumbnailCache.set(file.id, converted);
+                setUrl(converted);
+                setLoading(false);
+                return;
+              }
+            }
+          } catch {}
+        }
+
         if(file.asset){
           if(isVideo){
             mediaBlobUrlCache.set(file.id, file.asset);
@@ -2434,9 +2534,9 @@ function LocalThumbnail({file}:{file:DriveFile}) {
             return;
           }
         }
-        // 2. Check IndexedDB cached thumbnail
+        // 2. Check IndexedDB cached thumbnail (skip corrupt stripped thumbs < 1500 bytes)
         const cachedThumb = await getOriginal('thumb-' + file.id);
-        if(cachedThumb && !disposed){
+        if(cachedThumb && !disposed && cachedThumb.size >= 1500){
           const thumbUrl = URL.createObjectURL(cachedThumb);
           if(isVideo) videoFrameCache.set(file.id, thumbUrl);
           else thumbnailCache.set(file.id, thumbUrl);
@@ -2445,10 +2545,10 @@ function LocalThumbnail({file}:{file:DriveFile}) {
           return;
         }
 
-        // 3. Remote Telegram: download ONLY fast thumbnail (5-15 KB), NEVER download full multi-MB file!
+        // 3. Remote Telegram: download ONLY fast valid thumbnail (5-15 KB), NEVER truncated grey boxes!
         if(file.remoteMessageId){
           const thumbBlob = await telegramGateway.downloadThumbnail(file.remoteMessageId);
-          if(thumbBlob && !disposed){
+          if(thumbBlob && !disposed && thumbBlob.size >= 1500){
             void saveOriginal('thumb-' + file.id, thumbBlob);
             const thumbUrl = URL.createObjectURL(thumbBlob);
             if(isVideo) videoFrameCache.set(file.id, thumbUrl);
@@ -2465,7 +2565,7 @@ function LocalThumbnail({file}:{file:DriveFile}) {
       }
     })();
     return()=>{disposed=true;};
-  },[file.id,file.originalId,file.remoteMessageId,file.name,file.kind,file.asset,isVideo]);
+  },[file.id,file.originalId,file.remoteMessageId,file.name,file.kind,file.asset,file.localUri,isVideo]);
 
   if (url) {
     return (

@@ -6,9 +6,26 @@ export interface FolderSyncPluginInterface {
   chooseFolder(): Promise<{ uri: string; name: string }>;
   listFiles(options: { uri: string }): Promise<{ files: Array<{ name: string; size: number; lastModified: number; mimeType: string; uri: string }> }>;
   readFilePart(options: { uri: string; offset: number; length: number }): Promise<{ data: string; bytesRead: number }>;
+  getThumbnail?(options: { uri: string }): Promise<{ data: string }>;
 }
 
 export const NativeFolderSync = registerPlugin<FolderSyncPluginInterface>('FolderSync');
+
+export async function getNativeThumbnail(uri: string): Promise<Blob | null> {
+  if (!Capacitor.isNativePlatform() || !NativeFolderSync.getThumbnail) return null;
+  try {
+    const res = await NativeFolderSync.getThumbnail({ uri });
+    if (!res || !res.data) return null;
+    const binary = atob(res.data);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new Blob([bytes], { type: 'image/jpeg' });
+  } catch {
+    return null;
+  }
+}
 
 export type SyncableItem = {
   name: string;

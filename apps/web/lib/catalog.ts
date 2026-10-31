@@ -5,6 +5,7 @@ export type DriveFile = {
   trashedAt: string | null; asset?: string; sha256?: string; tags: string[];
   version?: number; source?: 'server' | 'browser'; availability?: string; originalId?: string;
   remoteMessageId?: number;
+  localUri?: string;
 };
 export type FolderSyncSource = {
   type: 'android_saf' | 'web_fs';
@@ -154,6 +155,7 @@ export function mergeCatalogs(local: Catalog, remote: Catalog): Catalog {
         folderId: f.folderId !== undefined ? f.folderId : existingRemote.folderId,
         trashedAt: f.trashedAt || existingRemote.trashedAt,
         remoteMessageId: f.remoteMessageId || existingRemote.remoteMessageId,
+        localUri: f.localUri || existingRemote.localUri,
         source: 'server',
         availability: 'available',
       });

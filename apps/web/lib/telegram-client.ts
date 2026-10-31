@@ -391,6 +391,22 @@ export class TelegramBrowserGateway {
       }
     }
 
+    const isVideo = (mimeType || '').startsWith('video/') || kindFor(mimeType || '', fileName) === 'video';
+    const isImage = (mimeType || '').startsWith('image/') || kindFor(mimeType || '', fileName) === 'image';
+    const attributes: Api.TypeDocumentAttribute[] = [
+      new Api.DocumentAttributeFilename({ fileName }),
+    ];
+    if (isVideo) {
+      attributes.push(
+        new Api.DocumentAttributeVideo({
+          duration: 0,
+          w: 1280,
+          h: 720,
+          supportsStreaming: true,
+        })
+      );
+    }
+
     const result = await client.invoke(
       new Api.messages.SendMedia({
         peer: 'me',
@@ -398,10 +414,8 @@ export class TelegramBrowserGateway {
           file: inputFile,
           thumb: inputThumb,
           mimeType: mimeType || 'application/octet-stream',
-          attributes: [
-            new Api.DocumentAttributeFilename({ fileName }),
-          ],
-          forceFile: true,
+          attributes,
+          forceFile: (isVideo || isImage) ? undefined : true,
         }),
         message: caption || `filedeck.ai File: ${fileName}`,
         randomId: generateRandomBigInt(),
@@ -654,6 +668,22 @@ export class TelegramBrowserGateway {
       }
     }
 
+    const isVideo = (fileInfo.mimeType || '').startsWith('video/') || kindFor(fileInfo.mimeType || '', fileInfo.name) === 'video';
+    const isImage = (fileInfo.mimeType || '').startsWith('image/') || kindFor(fileInfo.mimeType || '', fileInfo.name) === 'image';
+    const attributes: Api.TypeDocumentAttribute[] = [
+      new Api.DocumentAttributeFilename({ fileName: fileInfo.name }),
+    ];
+    if (isVideo) {
+      attributes.push(
+        new Api.DocumentAttributeVideo({
+          duration: 0,
+          w: 1280,
+          h: 720,
+          supportsStreaming: true,
+        })
+      );
+    }
+
     const result = await client.invoke(
       new Api.messages.SendMedia({
         peer: 'me',
@@ -661,10 +691,8 @@ export class TelegramBrowserGateway {
           file: inputFile,
           thumb: inputThumb,
           mimeType: fileInfo.mimeType || 'application/octet-stream',
-          attributes: [
-            new Api.DocumentAttributeFilename({ fileName: fileInfo.name }),
-          ],
-          forceFile: true,
+          attributes,
+          forceFile: (isVideo || isImage) ? undefined : true,
         }),
         message: caption || `filedeck.ai File: ${fileInfo.name}`,
         randomId: generateRandomBigInt(),
@@ -768,6 +796,7 @@ export class TelegramBrowserGateway {
       availability: 'available',
       remoteMessageId,
       version: 1,
+      localUri: fileInfo.uri,
     };
 
     const transfer: Transfer = {
@@ -904,7 +933,64 @@ export class TelegramBrowserGateway {
     return new Blob(accumulatedChunks as unknown as BlobPart[]);
   }
 
+  // Stream arbitrary chunk for instant video/audio playback
+  public async getFileChunk(remoteMessageId: number, offset: number, length: number): Promise<Uint8Array> {
+    const client = await this.getClient();
+    const messages = await client.getMessages('me', { ids: [remoteMessageId] });
+    if (!messages || messages.length === 0 || !messages[0].media) {
+      throw new Error('Message not found');
+    }
+    const message = messages[0];
+    const media = message.media;
+    if (!media) throw new Error('No media');
+
+    let location: Api.TypeInputFileLocation;
+
+    if (media instanceof Api.MessageMediaDocument && media.document instanceof Api.Document) {
+      const doc = media.document;
+      location = new Api.InputDocumentFileLocation({
+        id: doc.id,
+        accessHash: doc.accessHash,
+        fileReference: doc.fileReference,
+        thumbSize: '',
+      });
+    } else if (media instanceof Api.MessageMediaPhoto && media.photo instanceof Api.Photo) {
+      const photo = media.photo;
+      const largest = photo.sizes[photo.sizes.length - 1];
+      location = new Api.InputPhotoFileLocation({
+        id: photo.id,
+        accessHash: photo.accessHash,
+        fileReference: photo.fileReference,
+        thumbSize: 'type' in largest ? largest.type : '',
+      });
+    } else {
+      throw new Error('Unsupported media type for streaming');
+    }
+
+    // Telegram chunk offset must be a multiple of 4096 (4 KB) and limit multiple of 4096
+    const alignedOffset = Math.floor(offset / 4096) * 4096;
+    const alignedLimit = Math.ceil((offset - alignedOffset + length) / 4096) * 4096;
+
+    const res = await client.invoke(
+      new Api.upload.GetFile({
+        location,
+        offset: bigInt(alignedOffset),
+        limit: Math.min(alignedLimit, 1024 * 1024),
+      })
+    );
+
+    if (res instanceof Api.upload.File) {
+      const rawBytes = res.bytes;
+      const delta = offset - alignedOffset;
+      const sliced = rawBytes.subarray(delta, delta + length);
+      return sliced;
+    }
+
+    throw new Error('Could not get file chunk');
+  }
+
   // Fast thumbnail downloader for images and videos (5-15 KB, ~30ms)
+  // Ensures ONLY complete, valid, crisp thumbnails are returned — NEVER truncated grey boxes!
   public async downloadThumbnail(remoteMessageId: number): Promise<Blob | null> {
     try {
       const client = await this.getClient();
@@ -916,38 +1002,56 @@ export class TelegramBrowserGateway {
       const media = message.media;
       if (!media) return null;
 
-      let thumbToUse: number | undefined = undefined;
-      let hasThumb = false;
-
       // 1. Photo media
       if (media instanceof Api.MessageMediaPhoto || ('photo' in media && media.photo)) {
         const photo = ('photo' in media && media.photo) ? (media.photo as Api.Photo) : (media as unknown as Api.Photo);
         if (photo && photo.sizes && photo.sizes.length > 0) {
-          hasThumb = true;
-          thumbToUse = photo.sizes.length - 1;
-        } else {
-          hasThumb = true;
-          thumbToUse = 0;
+          // Avoid PhotoStrippedSize which causes corrupt grey bottoms
+          const validSizes = photo.sizes.filter(s => !(s instanceof Api.PhotoStrippedSize) && !(s instanceof Api.PhotoSizeEmpty));
+          if (validSizes.length > 0) {
+            // Pick 'm' (medium ~320px) or first valid size
+            const targetThumb = validSizes.find(s => 'type' in s && s.type === 'm') || validSizes[0];
+            const buf = await client.downloadMedia(message, { thumb: targetThumb });
+            if (buf && typeof buf !== 'string') {
+              const uint8 = Buffer.isBuffer(buf) ? new Uint8Array(buf) : (buf as Uint8Array);
+              if (uint8.length > 1500) {
+                return new Blob([uint8 as unknown as BlobPart], { type: 'image/jpeg' });
+              }
+            }
+          }
         }
       } 
       // 2. Document media (Video, Image, Audio, Document, etc.)
       else if (media instanceof Api.MessageMediaDocument || ('document' in media && media.document)) {
         const doc = ('document' in media && media.document) ? (media.document as Api.Document) : (media as unknown as Api.Document);
         if (doc && doc.thumbs && doc.thumbs.length > 0) {
-          hasThumb = true;
-          thumbToUse = doc.thumbs.length - 1;
-        }
-      }
-
-      if (hasThumb && thumbToUse !== undefined) {
-        const buf = await client.downloadMedia(message, { thumb: thumbToUse });
-        if (buf) {
-          if (typeof buf === 'string') {
-            return null;
+          const validThumbs = doc.thumbs.filter(s => !(s instanceof Api.PhotoStrippedSize) && !(s instanceof Api.PhotoSizeEmpty));
+          if (validThumbs.length > 0) {
+            const targetThumb = validThumbs.find(s => 'type' in s && s.type === 'm') || validThumbs[validThumbs.length - 1];
+            const buf = await client.downloadMedia(message, { thumb: targetThumb });
+            if (buf && typeof buf !== 'string') {
+              const uint8 = Buffer.isBuffer(buf) ? new Uint8Array(buf) : (buf as Uint8Array);
+              if (uint8.length > 1500) {
+                return new Blob([uint8 as unknown as BlobPart], { type: 'image/jpeg' });
+              }
+            }
           }
-          const uint8 = Buffer.isBuffer(buf) ? new Uint8Array(buf) : (buf as Uint8Array);
-          if (uint8.length > 0) {
-            return new Blob([uint8 as unknown as BlobPart], { type: 'image/jpeg' });
+        }
+
+        // 3. If no valid PhotoSize thumbnail exists, but file is a normal image under 3.5 MB:
+        // Download the full image so the user gets a crystal clear thumbnail without grey corrupt sections!
+        const mime = doc.mimeType || '';
+        const fileNameAttr = doc.attributes?.find(a => 'fileName' in a && typeof a.fileName === 'string') as Api.DocumentAttributeFilename | undefined;
+        const fn = fileNameAttr?.fileName || '';
+        const isImg = mime.startsWith('image/') || /\.(jpe?g|png|webp|avif)$/i.test(fn);
+        const docBytes = typeof doc.size === 'number' ? doc.size : (doc.size ? doc.size.toJSNumber() : 0);
+        if (isImg && docBytes > 0 && docBytes <= 3.5 * 1024 * 1024) {
+          const fullBuf = await client.downloadMedia(message);
+          if (fullBuf && typeof fullBuf !== 'string') {
+            const uint8 = Buffer.isBuffer(fullBuf) ? new Uint8Array(fullBuf) : (fullBuf as Uint8Array);
+            if (uint8.length > 1500) {
+              return new Blob([uint8 as unknown as BlobPart], { type: mime || 'image/jpeg' });
+            }
           }
         }
       }
