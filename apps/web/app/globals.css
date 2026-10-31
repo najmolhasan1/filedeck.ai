@@ -301,3 +301,64 @@
   .upload-heading-button{padding:9px 10px;min-height:36px}
   .upload-heading-button span{display:none}
 }
+
+/* Mobile Chrome Navigation Drawer & Viewport Stability */
+.app-shell{min-height:100vh;min-height:100dvh}
+.sidebar{
+  height:100vh;
+  height:100dvh;
+  max-height:100dvh;
+  overflow-y:auto;
+  overflow-x:hidden;
+  overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;
+}
+
+@media(max-width:650px){
+  .sidebar{
+    width:min(285px,85vw);
+    height:100vh;
+    height:100dvh;
+    max-height:100dvh;
+    padding:max(24px,calc(24px + env(safe-area-inset-top,0px))) 18px max(36px,calc(36px + env(safe-area-inset-bottom,0px)));
+    z-index:90;
+    overflow-y:auto;
+    overflow-x:hidden;
+    overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;
+    touch-action:pan-y;
+    background:var(--sidebar);
+  }
+  .sidebar::after{
+    content:'';
+    position:fixed;
+    left:0;
+    bottom:-160px;
+    width:320px;
+    height:220px;
+    background:var(--sidebar);
+    pointer-events:none;
+    z-index:-1;
+  }
+  .sidebar-bottom{
+    margin-top:20px !important;
+    padding-top:16px !important;
+    padding-bottom:max(32px,calc(32px + env(safe-area-inset-bottom,0px))) !important;
+    border-top:1px solid #e5ecd9;
+  }
+  .mobile-shade{
+    touch-action:none;
+    overscroll-behavior:none;
+    z-index:85;
+  }
+  .topbar{
+    position:sticky;
+    top:0;
+    z-index:40;
+    background:#fdfefa;
+  }
+  main{
+    padding-bottom:max(36px,calc(36px + env(safe-area-inset-bottom,0px)));
+  }
+}
+

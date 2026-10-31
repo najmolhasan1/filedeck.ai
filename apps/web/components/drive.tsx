@@ -260,6 +260,19 @@ export default function Drive() {
     };document.addEventListener('keydown',listener);return()=>document.removeEventListener('keydown',listener);
   },[]);
   useEffect(()=>{
+    if(typeof document==='undefined')return;
+    if(mobileNav){
+      const prevOverflow=document.body.style.overflow;
+      const prevTouchAction=document.body.style.touchAction;
+      document.body.style.overflow='hidden';
+      document.body.style.touchAction='none';
+      return ()=>{
+        document.body.style.overflow=prevOverflow;
+        document.body.style.touchAction=prevTouchAction;
+      };
+    }
+  },[mobileNav]);
+  useEffect(()=>{
     if(typeof window!=='undefined'){
       import('@capacitor/core').then(({Capacitor})=>{
         if(Capacitor.isNativePlatform()){
@@ -1072,10 +1085,10 @@ export default function Drive() {
         {(['favorites','recent','transfers','trash'] as View[]).map(next=>{const Icon=icons[next];return <button key={next} onClick={()=>navigate(next)} className={`nav-link ${view===next?'active':''}`}><Icon size={19}/><span>{t(...viewLabels[next])}</span>{countFor(next)>0&&<span className="nav-count">{countFor(next)}</span>}{next==='transfers'&&<span className="tiny-dot"/>}</button>;})}
       </nav>
       <div className="sidebar-bottom">
-        <div className="storage-card"><div className="storage-title"><span className="telegram-icon"><Send size={16}/></span><strong>{t('Made for Telegram','টেলিগ্রামের জন্য তৈরি')}</strong><Info size={14}/></div><p>{t('Your originals. Your account. A familiar home for both.','আপনার মূল ফাইল। আপনার অ্যাকাউন্ট। সবকিছুর পরিচিত ঠিকানা।')}</p><button onClick={()=>openDialog({type:'connect'})}>{t('Connect your account','আপনার অ্যাকাউন্ট যুক্ত করুন')}<ArrowRight size={15}/></button></div>
-        <div className="workspace-label" onClick={()=>openDialog({type:'settings'})} role="button" tabIndex={0} aria-label={t('Workspace settings','ওয়ার্কস্পেস সেটিংস')}><span className="workspace-avatar">N</span><div><strong>{t('Personal workspace','ব্যক্তিগত ওয়ার্কস্পেস')}</strong><span>{t('A little more organized','সবকিছু আরও গোছানো')}</span></div><ChevronDown size={15}/></div>
-        <button className="nav-link" onClick={()=>openDialog({type:'settings'})}><Settings2 size={19}/><span>{t('Settings','সেটিংস')}</span></button>
-        <button className="nav-link" onClick={()=>openDialog({type:'help'})}><CircleHelp size={19}/><span>{t('Help & getting started','সাহায্য ও নির্দেশনা')}</span><span className="external-arrow">↗</span></button>
+        <div className="storage-card"><div className="storage-title"><span className="telegram-icon"><Send size={16}/></span><strong>{t('Made for Telegram','টেলিগ্রামের জন্য তৈরি')}</strong><Info size={14}/></div><p>{t('Your originals. Your account. A familiar home for both.','আপনার মূল ফাইল। আপনার অ্যাকাউন্ট। সবকিছুর পরিচিত ঠিকানা।')}</p><button onClick={()=>{setMobileNav(false);openDialog({type:'connect'});}}>{t('Connect your account','আপনার অ্যাকাউন্ট যুক্ত করুন')}<ArrowRight size={15}/></button></div>
+        <div className="workspace-label" onClick={()=>{setMobileNav(false);openDialog({type:'settings'});}} role="button" tabIndex={0} aria-label={t('Workspace settings','ওয়ার্কস্পেস সেটিংস')}><span className="workspace-avatar">N</span><div><strong>{t('Personal workspace','ব্যক্তিগত ওয়ার্কস্পেস')}</strong><span>{t('A little more organized','সবকিছু আরও গোছানো')}</span></div><ChevronDown size={15}/></div>
+        <button className="nav-link" onClick={()=>{setMobileNav(false);openDialog({type:'settings'});}}><Settings2 size={19}/><span>{t('Settings','সেটিংস')}</span></button>
+        <button className="nav-link" onClick={()=>{setMobileNav(false);openDialog({type:'help'});}}><CircleHelp size={19}/><span>{t('Help & getting started','সাহায্য ও নির্দেশনা')}</span><span className="external-arrow">↗</span></button>
         <div className="sidebar-foot"><span className="mini-leaf">✳</span>{t('A calmer kind of cloud.','মেঘের মতো হালকা।')}</div>
       </div>
     </aside>
