@@ -1,6 +1,7 @@
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import { computeCheck } from 'telegram/Password.js';
+import { generateRandomBigInt } from 'telegram/Helpers.js';
 import { Catalog, DriveFile, formatBytes, kindFor, MAX_FILE_BYTES, Transfer } from './catalog';
 import { commitCatalog, loadCatalog, saveCatalog } from './storage';
 
@@ -257,6 +258,99 @@ export class TelegramBrowserGateway {
     }
   }
 
+  // Direct MTProto chunked document uploader that streams memory-efficiently directly to Saved Messages
+  public async uploadFileDirect(
+    file: Blob,
+    fileName: string,
+    mimeType: string,
+    signal?: AbortSignal,
+    onProgress?: (bytes: number, total: number) => void
+  ): Promise<number> {
+    const client = await this.getClient();
+    const partSize = 512 * 1024; // 512 KB per chunk
+    const totalParts = Math.max(1, Math.ceil(file.size / partSize));
+    const isBig = file.size > 10 * 1024 * 1024;
+    // 64-bit random ID for MTProto file handle
+    const fileId = generateRandomBigInt();
+
+    for (let i = 0; i < totalParts; i++) {
+      if (signal?.aborted) throw new Error('Upload cancelled');
+      const start = i * partSize;
+      const end = Math.min(file.size, start + partSize);
+      const chunk = file.slice(start, end);
+      const arrayBuffer = await chunk.arrayBuffer();
+      const bytes = Buffer.from(arrayBuffer);
+
+      if (isBig) {
+        await client.invoke(
+          new Api.upload.SaveBigFilePart({
+            fileId,
+            filePart: i,
+            fileTotalParts: totalParts,
+            bytes,
+          })
+        );
+      } else {
+        await client.invoke(
+          new Api.upload.SaveFilePart({
+            fileId,
+            filePart: i,
+            bytes,
+          })
+        );
+      }
+
+      onProgress?.(end, file.size);
+    }
+
+    const inputFile = isBig
+      ? new Api.InputFileBig({
+          id: fileId,
+          parts: totalParts,
+          name: fileName,
+        })
+      : new Api.InputFile({
+          id: fileId,
+          parts: totalParts,
+          name: fileName,
+          md5Checksum: '',
+        });
+
+    const result = await client.invoke(
+      new Api.messages.SendMedia({
+        peer: 'me',
+        media: new Api.InputMediaUploadedDocument({
+          file: inputFile,
+          mimeType: mimeType || 'application/octet-stream',
+          attributes: [
+            new Api.DocumentAttributeFilename({ fileName }),
+          ],
+          forceFile: true,
+        }),
+        message: `CloudNest File: ${fileName}`,
+        randomId: generateRandomBigInt(),
+      })
+    );
+
+    let messageId = 0;
+    const raw = result as unknown as { id?: number; updates?: Array<{ id?: number; message?: { id?: number } }> };
+    if (typeof raw.id === 'number') {
+      messageId = raw.id;
+    } else if (Array.isArray(raw.updates)) {
+      for (const u of raw.updates) {
+        if (u.message && typeof u.message.id === 'number') {
+          messageId = u.message.id;
+          break;
+        } else if (typeof u.id === 'number') {
+          messageId = u.id;
+          break;
+        }
+      }
+    }
+
+    return messageId;
+  }
+
   public async upload(
     file: File,
     options: {
@@ -269,30 +363,25 @@ export class TelegramBrowserGateway {
       throw new Error(`File exceeds maximum allowed size of ${formatBytes(MAX_FILE_BYTES)}`);
     }
 
-    const client = await this.getClient();
     const transferId = crypto.randomUUID();
     const fileId = crypto.randomUUID();
 
     options.onProgress?.({ bytes: 0, expectedBytes: file.size, phase: 'preparing' });
 
-    let sentMessage: Api.Message;
+    let remoteMessageId = 0;
     try {
       options.onProgress?.({ bytes: 0, expectedBytes: file.size, phase: 'staging' });
 
-      // Direct browser upload to Saved Messages as an uncompressed original document
-      const result = await client.sendFile('me', {
+      // Direct chunked upload to Telegram Saved Messages via MTProto
+      remoteMessageId = await this.uploadFileDirect(
         file,
-        caption: `CloudNest File: ${file.name}`,
-        forceDocument: true,
-        workers: 3,
-        progressCallback: (progress: number) => {
-          if (options.signal?.aborted) throw new Error('Upload cancelled');
-          const loaded = Math.round(progress * file.size);
-          options.onProgress?.({ bytes: loaded, expectedBytes: file.size, phase: 'staging' });
-        },
-      });
-
-      sentMessage = result as unknown as Api.Message;
+        file.name,
+        file.type,
+        options.signal,
+        (bytes, total) => {
+          options.onProgress?.({ bytes, expectedBytes: total, phase: 'staging' });
+        }
+      );
     } catch (error: unknown) {
       if (options.signal?.aborted) throw new Error('Upload cancelled');
       throw error;
@@ -314,7 +403,7 @@ export class TelegramBrowserGateway {
       tags: [],
       source: 'server',
       availability: 'available',
-      remoteMessageId: sentMessage.id,
+      remoteMessageId,
       version: 1,
     };
 
@@ -388,7 +477,6 @@ export class TelegramBrowserGateway {
 
   public async syncCatalogToTelegram(catalog: Catalog): Promise<void> {
     try {
-      const client = await this.getClient();
       const content = JSON.stringify({
         schemaVersion: 1,
         exportedAt: new Date().toISOString(),
@@ -410,13 +498,7 @@ export class TelegramBrowserGateway {
       });
 
       const blob = new Blob([content], { type: 'application/json' });
-      const syncFile = new File([blob], 'cloudnest_catalog.json', { type: 'application/json' });
-
-      await client.sendFile('me', {
-        file: syncFile,
-        caption: `${CATALOG_SYNC_TAG} CloudNest Catalog Backup (${new Date().toLocaleDateString()})`,
-        forceDocument: true,
-      });
+      await this.uploadFileDirect(blob, 'cloudnest_catalog.json', 'application/json');
     } catch (err) {
       console.warn('Could not sync catalog backup to Telegram:', err);
     }
