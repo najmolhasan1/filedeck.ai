@@ -273,7 +273,8 @@ export class TelegramBrowserGateway {
     signal?: AbortSignal,
     onProgress?: (bytes: number, total: number, resumeState: { fileId: string; startPart: number }) => void,
     caption?: string,
-    resumeState?: { fileId?: string | bigInt.BigInteger; startPart?: number }
+    resumeState?: { fileId?: string | bigInt.BigInteger; startPart?: number },
+    thumbBlob?: Blob
   ): Promise<{ remoteMessageId: number; fileId: string }> {
     const client = await this.getClient();
     const partSize = 512 * 1024; // 512 KB per chunk
@@ -379,11 +380,22 @@ export class TelegramBrowserGateway {
           md5Checksum: '',
         });
 
+    let inputThumb: Api.TypeInputFile | undefined;
+    if (thumbBlob && thumbBlob.size > 0) {
+      try {
+        const thumbFile = new File([thumbBlob], 'thumb.jpg', { type: 'image/jpeg' });
+        inputThumb = await client.uploadFile({ file: thumbFile, workers: 1 });
+      } catch (err) {
+        console.warn('Could not upload thumbnail attachment:', err);
+      }
+    }
+
     const result = await client.invoke(
       new Api.messages.SendMedia({
         peer: 'me',
         media: new Api.InputMediaUploadedDocument({
           file: inputFile,
+          thumb: inputThumb,
           mimeType: mimeType || 'application/octet-stream',
           attributes: [
             new Api.DocumentAttributeFilename({ fileName }),
@@ -420,6 +432,7 @@ export class TelegramBrowserGateway {
       folderId?: string | null;
       signal?: AbortSignal;
       resumeState?: { fileId?: string | bigInt.BigInteger; startPart?: number };
+      thumbBlob?: Blob;
       onProgress?: (value: {
         bytes: number;
         expectedBytes: number;
@@ -456,7 +469,8 @@ export class TelegramBrowserGateway {
           });
         },
         undefined,
-        options.resumeState
+        options.resumeState,
+        options.thumbBlob
       );
       remoteMessageId = result.remoteMessageId;
     } catch (error: unknown) {
@@ -518,7 +532,8 @@ export class TelegramBrowserGateway {
     signal?: AbortSignal,
     onProgress?: (bytes: number, total: number, resumeState: { fileId: string; startPart: number }) => void,
     caption?: string,
-    resumeState?: { fileId?: string | bigInt.BigInteger; startPart?: number }
+    resumeState?: { fileId?: string | bigInt.BigInteger; startPart?: number },
+    thumbBlob?: Blob
   ): Promise<{ remoteMessageId: number; fileId: string }> {
     const client = await this.getClient();
     const partSize = 512 * 1024; // 512 KB per chunk
@@ -628,11 +643,22 @@ export class TelegramBrowserGateway {
           md5Checksum: '',
         });
 
+    let inputThumb: Api.TypeInputFile | undefined;
+    if (thumbBlob && thumbBlob.size > 0) {
+      try {
+        const thumbFile = new File([thumbBlob], 'thumb.jpg', { type: 'image/jpeg' });
+        inputThumb = await client.uploadFile({ file: thumbFile, workers: 1 });
+      } catch (err) {
+        console.warn('Could not upload thumbnail attachment for native stream:', err);
+      }
+    }
+
     const result = await client.invoke(
       new Api.messages.SendMedia({
         peer: 'me',
         media: new Api.InputMediaUploadedDocument({
           file: inputFile,
+          thumb: inputThumb,
           mimeType: fileInfo.mimeType || 'application/octet-stream',
           attributes: [
             new Api.DocumentAttributeFilename({ fileName: fileInfo.name }),
@@ -669,6 +695,7 @@ export class TelegramBrowserGateway {
       folderId?: string | null;
       signal?: AbortSignal;
       resumeState?: { fileId?: string | bigInt.BigInteger; startPart?: number };
+      thumbBlob?: Blob;
       onProgress?: (value: {
         bytes: number;
         expectedBytes: number;
@@ -702,7 +729,8 @@ export class TelegramBrowserGateway {
           });
         },
         undefined,
-        options.resumeState
+        options.resumeState,
+        options.thumbBlob
       );
       remoteMessageId = result.remoteMessageId;
     } catch (error: unknown) {
@@ -873,6 +901,61 @@ export class TelegramBrowserGateway {
     }
 
     return new Blob(accumulatedChunks as unknown as BlobPart[]);
+  }
+
+  // Fast thumbnail downloader for images and videos (5-15 KB, ~30ms)
+  public async downloadThumbnail(remoteMessageId: number): Promise<Blob | null> {
+    try {
+      const client = await this.getClient();
+      const messages = await client.getMessages('me', { ids: [remoteMessageId] });
+      if (!messages || messages.length === 0 || !messages[0].media) {
+        return null;
+      }
+      const message = messages[0];
+      const media = message.media;
+      if (!media) return null;
+
+      let thumbToUse: number | undefined = undefined;
+      let hasThumb = false;
+
+      // 1. Photo media
+      if (media instanceof Api.MessageMediaPhoto || ('photo' in media && media.photo)) {
+        const photo = ('photo' in media && media.photo) ? (media.photo as Api.Photo) : (media as unknown as Api.Photo);
+        if (photo && photo.sizes && photo.sizes.length > 0) {
+          hasThumb = true;
+          thumbToUse = photo.sizes.length - 1;
+        } else {
+          hasThumb = true;
+          thumbToUse = 0;
+        }
+      } 
+      // 2. Document media (Video, Image, Audio, Document, etc.)
+      else if (media instanceof Api.MessageMediaDocument || ('document' in media && media.document)) {
+        const doc = ('document' in media && media.document) ? (media.document as Api.Document) : (media as unknown as Api.Document);
+        if (doc && doc.thumbs && doc.thumbs.length > 0) {
+          hasThumb = true;
+          thumbToUse = doc.thumbs.length - 1;
+        }
+      }
+
+      if (hasThumb && thumbToUse !== undefined) {
+        const buf = await client.downloadMedia(message, { thumb: thumbToUse });
+        if (buf) {
+          if (typeof buf === 'string') {
+            return null;
+          }
+          const uint8 = Buffer.isBuffer(buf) ? new Uint8Array(buf) : (buf as Uint8Array);
+          if (uint8.length > 0) {
+            return new Blob([uint8 as unknown as BlobPart], { type: 'image/jpeg' });
+          }
+        }
+      }
+
+      return null;
+    } catch (err) {
+      console.warn('Could not download thumbnail for remote message', remoteMessageId, err);
+      return null;
+    }
   }
 
   public async deleteFile(file: DriveFile): Promise<void> {
