@@ -9,6 +9,13 @@ const config: CapacitorConfig = {
   },
   android: {
     allowMixedContent: true,
+  },
+  plugins: {
+    StatusBar: {
+      overlaysWebView: false,
+      style: 'DARK',
+      backgroundColor: '#f4f7ee'
+    }
   }
 };
 

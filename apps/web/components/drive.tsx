@@ -231,6 +231,19 @@ export default function Drive() {
     };document.addEventListener('keydown',listener);return()=>document.removeEventListener('keydown',listener);
   },[]);
   useEffect(()=>{
+    if(typeof window!=='undefined'){
+      import('@capacitor/core').then(({Capacitor})=>{
+        if(Capacitor.isNativePlatform()){
+          import('@capacitor/status-bar').then(({StatusBar,Style})=>{
+            StatusBar.setOverlaysWebView({overlay:false}).catch(()=>{});
+            StatusBar.setStyle({style:Style.Dark}).catch(()=>{});
+            StatusBar.setBackgroundColor({color:'#f4f7ee'}).catch(()=>{});
+          }).catch(()=>{});
+        }
+      }).catch(()=>{});
+    }
+  },[]);
+  useEffect(()=>{
     if(!preview)return;let disposed=false;let localUrl:string|undefined;
     setPreviewUrl(null);setPreviewError('');setPreviewProgress(null);setPreviewBytes(null);
     (async()=>{
