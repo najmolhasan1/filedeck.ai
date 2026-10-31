@@ -75,6 +75,10 @@ export class TelegramBrowserGateway {
     return Boolean(localStorage.getItem(SESSION_STORAGE_KEY));
   }
 
+  public hasSession(): boolean {
+    return this.hasStoredSession();
+  }
+
   public resetSession(): void {
     if (this.client) {
       try { void this.client.disconnect(); } catch {}
@@ -265,7 +269,8 @@ export class TelegramBrowserGateway {
     fileName: string,
     mimeType: string,
     signal?: AbortSignal,
-    onProgress?: (bytes: number, total: number) => void
+    onProgress?: (bytes: number, total: number) => void,
+    caption?: string
   ): Promise<number> {
     const client = await this.getClient();
     const partSize = 512 * 1024; // 512 KB per chunk
@@ -328,7 +333,7 @@ export class TelegramBrowserGateway {
           ],
           forceFile: true,
         }),
-        message: `filedeck.ai File: ${fileName}`,
+        message: caption || `filedeck.ai File: ${fileName}`,
         randomId: generateRandomBigInt(),
       })
     );
@@ -499,6 +504,11 @@ export class TelegramBrowserGateway {
         await saveCatalog(restored);
         return restored;
       }
+      const scanned = await this.scanAndRecoverSavedMessages();
+      if (scanned && scanned.files.length > 0) {
+        await saveCatalog(scanned);
+        return scanned;
+      }
     } catch {
       // Return empty or local
     }
@@ -528,7 +538,14 @@ export class TelegramBrowserGateway {
       });
 
       const blob = new Blob([content], { type: 'application/json' });
-      await this.uploadFileDirect(blob, 'filedeck_catalog.json', 'application/json');
+      await this.uploadFileDirect(
+        blob,
+        'filedeck_catalog.json',
+        'application/json',
+        undefined,
+        undefined,
+        `${CATALOG_SYNC_TAG} filedeck.ai Catalog Backup`
+      );
     } catch (err) {
       console.warn('Could not sync catalog backup to Telegram:', err);
     }
@@ -537,32 +554,119 @@ export class TelegramBrowserGateway {
   public async restoreCatalogFromTelegram(): Promise<Catalog | null> {
     try {
       const client = await this.getClient();
-      let messages = await client.getMessages('me', { search: CATALOG_SYNC_TAG, limit: 5 });
+      let messages = await client.getMessages('me', { search: CATALOG_SYNC_TAG, limit: 10 });
       if (!messages || messages.length === 0) {
-        messages = await client.getMessages('me', { search: LEGACY_CATALOG_SYNC_TAG, limit: 5 });
+        messages = await client.getMessages('me', { search: 'filedeck_catalog.json', limit: 10 });
+      }
+      if (!messages || messages.length === 0) {
+        messages = await client.getMessages('me', { search: LEGACY_CATALOG_SYNC_TAG, limit: 10 });
       }
       if (!messages || messages.length === 0) return null;
 
       for (const msg of messages) {
-        if (msg.message && (msg.message.includes(CATALOG_SYNC_TAG) || msg.message.includes(LEGACY_CATALOG_SYNC_TAG)) && msg.media) {
+        if (msg.media) {
           const buffer = await client.downloadMedia(msg);
           if (buffer) {
             const bytes = typeof buffer === 'string' ? new TextEncoder().encode(buffer) : new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.length);
             const text = new TextDecoder().decode(bytes);
-            const parsed = JSON.parse(text);
-            if (parsed.files && parsed.folders) {
-              return {
-                schemaVersion: 1,
-                folders: parsed.folders,
-                files: parsed.files.map((f: DriveFile) => ({ ...f, source: 'server', availability: 'available' })),
-                transfers: [],
-              };
-            }
+            try {
+              const parsed = JSON.parse(text);
+              if (parsed && Array.isArray(parsed.files)) {
+                return {
+                  schemaVersion: 1,
+                  folders: Array.isArray(parsed.folders) ? parsed.folders : [],
+                  files: parsed.files.map((f: DriveFile) => ({ ...f, source: 'server', availability: 'available' })),
+                  transfers: [],
+                };
+              }
+            } catch {}
           }
         }
       }
     } catch (err) {
       console.warn('Could not restore catalog from Telegram:', err);
+    }
+    return null;
+  }
+
+  public async scanAndRecoverSavedMessages(): Promise<Catalog | null> {
+    try {
+      const client = await this.getClient();
+      const messages = await client.getMessages('me', { limit: 100 });
+      if (!messages || messages.length === 0) return null;
+
+      const recoveredFiles: DriveFile[] = [];
+      const seenIds = new Set<number>();
+
+      for (const msg of messages) {
+        if (!msg.media || seenIds.has(msg.id)) continue;
+        seenIds.add(msg.id);
+
+        let fileName = '';
+        let mime = 'application/octet-stream';
+        let size = 0;
+
+        const media = msg.media as unknown as {
+          document?: {
+            id?: unknown;
+            size?: number | bigint;
+            mimeType?: string;
+            attributes?: Array<{ className?: string; fileName?: string }>;
+          };
+        };
+
+        if (media.document) {
+          size = Number(media.document.size || 0);
+          mime = media.document.mimeType || 'application/octet-stream';
+          if (Array.isArray(media.document.attributes)) {
+            for (const attr of media.document.attributes) {
+              if (attr.fileName) {
+                fileName = attr.fileName;
+                break;
+              }
+            }
+          }
+        }
+
+        if (!fileName && msg.message) {
+          if (msg.message.startsWith('filedeck.ai File: ')) {
+            fileName = msg.message.replace('filedeck.ai File: ', '').trim();
+          }
+        }
+
+        if (fileName === 'filedeck_catalog.json' || fileName === 'cloudnest_catalog.json') continue;
+
+        if (fileName) {
+          recoveredFiles.push({
+            id: `tg-${msg.id}`,
+            name: fileName,
+            originalName: fileName,
+            mime,
+            bytes: size,
+            kind: kindFor(mime, fileName),
+            folderId: null,
+            favorite: false,
+            createdAt: msg.date ? new Date(msg.date * 1000).toISOString() : new Date().toISOString(),
+            trashedAt: null,
+            tags: [],
+            source: 'server',
+            availability: 'available',
+            remoteMessageId: msg.id,
+            version: 1,
+          });
+        }
+      }
+
+      if (recoveredFiles.length > 0) {
+        return {
+          schemaVersion: 1,
+          folders: [],
+          files: recoveredFiles,
+          transfers: [],
+        };
+      }
+    } catch (err) {
+      console.warn('Could not scan Saved Messages:', err);
     }
     return null;
   }
