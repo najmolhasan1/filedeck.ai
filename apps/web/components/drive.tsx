@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Cloud, CloudUpload, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Star, Tag, Trash2, Upload, Wifi, X } from 'lucide-react';
+import { Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Cloud, CloudUpload, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Pause, Play, Plus, RefreshCw, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Star, Tag, Trash2, Upload, Wifi, X } from 'lucide-react';
 import { canMoveFolder, Catalog, DriveFile, FileKind, Folder, Transfer, formatBytes, initialCatalog, kindFor, MAX_FILE_BYTES, safePreview } from '@/lib/catalog';
 import { commitCatalog, getOriginal, loadCatalog, saveCatalog, saveOriginal } from '@/lib/storage';
 import { APIError, ServerGateway, type ServerUser, type UploadDescriptor } from '@/lib/server';
@@ -11,6 +11,20 @@ import { parseCatalogImport } from '@/lib/catalog-import';
 import { pickFolderForSync, listFilesInFolder, registerWebDirectoryHandle } from '@/lib/folder-sync';
 
 const thumbnailCache = new Map<string, string>();
+
+type ActiveTransferTask = {
+  id: string;
+  type: 'upload' | 'download' | 'native-upload';
+  file?: File;
+  nativeFileInfo?: { name: string; size: number; mimeType: string; uri: string };
+  remoteMessageId?: number;
+  fileName: string;
+  folderId?: string | null;
+  totalBytes: number;
+  controller: AbortController;
+  resumeState?: { fileId?: string; startPart?: number; downloadedBytes?: number };
+  accumulatedChunks?: (Buffer | Uint8Array)[];
+};
 
 type View = 'all' | 'photos' | 'videos' | 'documents' | 'audio' | 'favorites' | 'recent' | 'trash' | 'transfers';
 type Dialog = {type: 'new-folder'} | {type: 'rename'; file: DriveFile} | {type: 'move'; ids: string[]} | {type: 'settings' | 'connect' | 'help' | 'security' | 'disconnect' | 'recovery'} | {type: 'remove'; ids: string[]} | {type: 'folder'; folder: Folder};
@@ -82,7 +96,9 @@ export default function Drive() {
   const [previewProgress,setPreviewProgress]=useState<number|null>(null);
   const [previewBytes,setPreviewBytes]=useState<{current:number;total:number}|null>(null);
   const [dockOpen,setDockOpen]=useState(true);
-  const [dismissedDock,setDismissedDock]=useState(false);
+  const [dismissedDock,setDismissedDock]=useState(true);
+  const sessionTransfersRef=useRef<Set<string>>(new Set());
+  const activeTransferTasks=useRef<Map<string,ActiveTransferTask>>(new Map());
   const [toast,setToast]=useState('');
   const [mobileNav,setMobileNav]=useState(false);
   const [menu,setMenu]=useState<string|null>(null);
@@ -114,7 +130,18 @@ export default function Drive() {
   const sessionEpoch=useRef(0);
   const activeAccount=useRef<string|undefined>(undefined);
   const transientTransfers=useRef(new Map<string,Transfer>());
-  const resetRuntime=()=>{sessionEpoch.current++;for(const controller of controllers.current.values())controller.abort();controllers.current.clear();transientTransfers.current.clear();activeAccount.current=undefined;setSyncJob(null);gateway.resetSession();};
+  const resetRuntime=()=>{
+    sessionEpoch.current++;
+    for(const controller of controllers.current.values())controller.abort();
+    controllers.current.clear();
+    for(const task of activeTransferTasks.current.values())task.controller.abort();
+    activeTransferTasks.current.clear();
+    sessionTransfersRef.current.clear();
+    transientTransfers.current.clear();
+    activeAccount.current=undefined;
+    setSyncJob(null);
+    gateway.resetSession();
+  };
   const t=(en:string,bn:string)=>locale==='bn'?bn:en;
   const notify=useCallback((message:string)=>setToast(message),[]);
   const explainError=(error:unknown)=>{
@@ -359,36 +386,61 @@ export default function Drive() {
   const trash=(ids:string[])=>{mutateFiles(ids,file=>({...file,trashedAt:new Date().toISOString()})).then(()=>notify(t('Moved to trash. You can restore it anytime.','ট্র্যাশে সরানো হয়েছে। যেকোনো সময় ফিরিয়ে আনতে পারবেন।'))).catch(()=>{});setSelected(new Set());setMenu(null);};
   const restore=(ids:string[])=>{mutateFiles(ids,file=>({...file,trashedAt:null})).then(()=>notify(t('Files restored to your drive.','ফাইল ড্রাইভে ফিরিয়ে আনা হয়েছে।'))).catch(()=>{});setSelected(new Set());setMenu(null);};
   const downloadBlob=(blob:Blob,name:string)=>{const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name.replace(/[\x00-\x1f]/g,'');a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
-  const download=async(file:DriveFile)=>{
+  const download=async(file:DriveFile,resumeOptions?:{resumeTransferId?:string;startOffset?:number;existingChunks?:(Buffer|Uint8Array)[]})=>{
     try{
       if(file.remoteMessageId){
-        const transferId=crypto.randomUUID();
+        const transferId=resumeOptions?.resumeTransferId||crypto.randomUUID();
         const controller=new AbortController();
         controllers.current.set(transferId,controller);
+        sessionTransfersRef.current.add(transferId);
         setDismissedDock(false);
         setDockOpen(true);
 
-        const transferItem:Transfer={
-          id:transferId,
-          name:file.name,
-          bytes:file.bytes,
-          stageBytes:0,
-          status:'saving',
-          direction:'download',
-          kind:file.kind,
-          createdAt:new Date().toISOString()
-        };
+        const accumulatedChunks:(Buffer|Uint8Array)[]=resumeOptions?.existingChunks?[...resumeOptions.existingChunks]:[];
+        const startOffset=resumeOptions?.startOffset||0;
 
-        catalogRef.current={
-          ...catalogRef.current,
-          transfers:[transferItem,...catalogRef.current.transfers.filter(t=>t.id!==transferId)]
-        };
+        activeTransferTasks.current.set(transferId,{
+          id:transferId,
+          type:'download',
+          remoteMessageId:file.remoteMessageId,
+          fileName:file.name,
+          totalBytes:file.bytes,
+          controller,
+          resumeState:{downloadedBytes:startOffset},
+          accumulatedChunks
+        });
+
+        const existingTransfer=catalogRef.current.transfers.find(t=>t.id===transferId);
+        const transferItem:Transfer=existingTransfer
+          ?{...existingTransfer,status:'saving',error:undefined}
+          : {
+              id:transferId,
+              name:file.name,
+              bytes:file.bytes,
+              stageBytes:startOffset,
+              status:'saving',
+              direction:'download',
+              kind:file.kind,
+              createdAt:new Date().toISOString(),
+              resumeState:{downloadedBytes:startOffset}
+            };
+
+        const nextTransfers=existingTransfer
+          ?catalogRef.current.transfers.map(t=>t.id===transferId?transferItem:t)
+          : [transferItem,...catalogRef.current.transfers.filter(t=>t.id!==transferId)];
+        catalogRef.current={...catalogRef.current,transfers:nextTransfers};
         renderCatalog(catalogRef.current);
 
-        notify(t(`Downloading “${file.name}”…`,`“${file.name}” ডাউনলোড হচ্ছে…`));
+        notify(startOffset>0?t(`Resuming “${file.name}”…`,`“${file.name}” পুনরায় ডাউনলোড হচ্ছে…`):t(`Downloading “${file.name}”…`,`“${file.name}” ডাউনলোড হচ্ছে…`));
 
         const blob=await telegramGateway.downloadFile(file.remoteMessageId,{
           signal:controller.signal,
+          startOffset,
+          existingChunks:accumulatedChunks,
+          onChunk:(chunk,downloadedBytes)=>{
+            const task=activeTransferTasks.current.get(transferId);
+            if(task)task.resumeState={downloadedBytes};
+          },
           onProgress:(ratio,downloaded,total)=>{
             const currentBytes=downloaded||Math.round(ratio*file.bytes);
             const totalBytes=total||file.bytes;
@@ -396,7 +448,8 @@ export default function Drive() {
               ...transferItem,
               stageBytes:currentBytes,
               bytes:totalBytes,
-              status:ratio>=1?'completed':'saving'
+              status:'saving',
+              resumeState:{downloadedBytes:currentBytes}
             };
             catalogRef.current={
               ...catalogRef.current,
@@ -411,34 +464,89 @@ export default function Drive() {
         const finishedTransfer:Transfer={
           ...transferItem,
           stageBytes:file.bytes,
-          status:'completed'
+          status:'completed',
+          error:undefined
         };
         catalogRef.current={
           ...catalogRef.current,
           transfers:catalogRef.current.transfers.map(item=>item.id===transferId?finishedTransfer:item)
         };
         renderCatalog(catalogRef.current);
+        activeTransferTasks.current.delete(transferId);
         notify(t(`“${file.name}” downloaded.`,`“${file.name}” ডাউনলোড সম্পন্ন হয়েছে।`));
         return;
       }
       if(file.source==='server'){const a=document.createElement('a');a.href=gateway.contentUrl(file.id);a.download=file.name;a.click();notify(t('Original download requested.','মূল ফাইল ডাউনলোডের অনুরোধ করা হয়েছে।'));return;}
       const blob=file.asset?await fetch(file.asset).then(response=>{if(!response.ok)throw new Error();return response.blob();}):await getOriginal(file.originalId||file.id);if(!blob)throw new Error();downloadBlob(blob,file.name);notify(t('Original download started.','মূল ফাইল ডাউনলোড শুরু হয়েছে।'));
     }catch(err:unknown){
-      const msg=err instanceof Error?err.message:'The original is unavailable.';
-      notify(msg==='Download cancelled'?t('Download cancelled.','ডাউনলোড বাতিল করা হয়েছে।'):msg);
+      const isPause=err&&typeof err==='object'&&('isPause' in err||(err as Error).message?.includes('paused'));
+      const isCancel=err&&typeof err==='object'&&('isCancel' in err||(err as Error).message?.includes('cancelled'));
+      const isNetwork=(err&&typeof err==='object'&&'isNetwork' in err)||(typeof navigator!=='undefined'&&!navigator.onLine);
+      const msg=err instanceof Error?err.message:String(err);
+
+      const transferId=resumeOptions?.resumeTransferId||Array.from(activeTransferTasks.current.keys()).find(k=>activeTransferTasks.current.get(k)?.remoteMessageId===file.remoteMessageId);
+      if(transferId){
+        const task=activeTransferTasks.current.get(transferId);
+        const downloadedBytes=(err&&typeof err==='object'&&'resumeState' in err?(err as {resumeState?:{downloadedBytes:number}}).resumeState?.downloadedBytes:undefined)??task?.resumeState?.downloadedBytes??0;
+        if(task){
+          task.resumeState={downloadedBytes};
+          if(err&&typeof err==='object'&&'chunks' in err){
+            task.accumulatedChunks=(err as {chunks?:(Buffer|Uint8Array)[]}).chunks;
+          }
+        }
+
+        if(isCancel||msg.includes('cancelled')){
+          activeTransferTasks.current.delete(transferId);
+          catalogRef.current={
+            ...catalogRef.current,
+            transfers:catalogRef.current.transfers.map(item=>item.id===transferId?{...item,status:'cancelled' as const,error:msg}:item)
+          };
+          renderCatalog(catalogRef.current);
+          notify(t('Download cancelled.','ডাউনলোড বাতিল করা হয়েছে।'));
+        }else if(isPause||isNetwork||msg.includes('paused')||msg.includes('offline')){
+          catalogRef.current={
+            ...catalogRef.current,
+            transfers:catalogRef.current.transfers.map(item=>item.id===transferId?{...item,status:'paused' as const,resumeState:{downloadedBytes},error:isNetwork?t('Network offline','ইন্টারনেট বিচ্ছিন্ন'):undefined}:item)
+          };
+          renderCatalog(catalogRef.current);
+          notify(isNetwork?t('Download paused due to network issue. It will resume automatically when connected.','ইন্টারনেট সমস্যার কারণে ডাউনলোড স্থগিত হয়েছে। নেট আসলে স্বয়ংক্রিয়ভাবে শুরু হবে।'):t('Download paused.','ডাউনলোড সাময়িক স্থগিত হয়েছে।'));
+        }else{
+          activeTransferTasks.current.delete(transferId);
+          catalogRef.current={
+            ...catalogRef.current,
+            transfers:catalogRef.current.transfers.map(item=>item.id===transferId?{...item,status:'failed' as const,error:msg}:item)
+          };
+          renderCatalog(catalogRef.current);
+          notify(msg);
+        }
+      }else{
+        notify(msg);
+      }
     }finally{setMenu(null);}
   };
-  const upload=async(list:FileList|File[])=>{
-    const files=Array.from(list);if(!files.length||!readyRef.current)return;
-    if(!serverMode && account?.telegram_connected){
-      setDismissedDock(false);
-      setDockOpen(true);
-      for(const file of files){
-        const id=crypto.randomUUID();
-        const controller=new AbortController();
-        controllers.current.set(id,controller);
+  const executeUploadSingle=async(file:File,options:{existingTransferId?:string;folderId?:string|null;resumeState?:{fileId?:string;startPart?:number}}={})=>{
+    const id=options.existingTransferId||crypto.randomUUID();
+    const controller=new AbortController();
+    sessionTransfersRef.current.add(id);
+    setDismissedDock(false);
+    setDockOpen(true);
 
-        const transfer:Transfer={
+    activeTransferTasks.current.set(id,{
+      id,
+      type:'upload',
+      file,
+      fileName:file.name,
+      folderId:options.folderId,
+      totalBytes:file.size,
+      controller,
+      resumeState:options.resumeState
+    });
+    controllers.current.set(id,controller);
+
+    const existingTransfer=catalogRef.current.transfers.find(t=>t.id===id);
+    const transfer:Transfer=existingTransfer
+      ?{...existingTransfer,status:'saving',error:undefined}
+      : {
           id,
           name:file.name,
           bytes:file.size,
@@ -446,55 +554,119 @@ export default function Drive() {
           direction:'upload',
           kind:kindFor(file.type||'',file.name),
           createdAt:new Date().toISOString(),
-          stageBytes:0,
-          providerBytes:0
+          stageBytes:(options.resumeState?.startPart||0)*512*1024,
+          providerBytes:0,
+          resumeState:options.resumeState
         };
-        const next={...catalogRef.current,transfers:[transfer,...catalogRef.current.transfers]};
-        catalogRef.current=next;renderCatalog(next);
-        try{
-          const result=await telegramGateway.upload(file,{
-            folderId,
-            signal:controller.signal,
-            onProgress:(p)=>{
-              const updatedTransfer:Transfer={
-                ...transfer,
-                stageBytes:p.bytes,
-                bytes:p.expectedBytes||file.size,
-                status:p.phase==='queued'?'completed':'saving',
-                direction:'upload',
-                kind:kindFor(file.type||'',file.name)
-              };
-              const updated={...catalogRef.current,transfers:catalogRef.current.transfers.map(item=>item.id===id?updatedTransfer:item)};
-              catalogRef.current=updated;renderCatalog(updated);
-            }
-          });
-          if(file.type.startsWith('image/')){
-            try {
-              const localUrl = URL.createObjectURL(file);
-              thumbnailCache.set(result.file.id, localUrl);
-            } catch {}
-          }
-          void saveOriginal(result.file.id, file);
-          const updatedCatalog={
-            ...catalogRef.current,
-            files:[result.file,...catalogRef.current.files.filter(f=>f.id!==result.file.id)],
-            transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'completed' as const,stageBytes:file.size}:item)
+
+    const nextTransfers=existingTransfer
+      ?catalogRef.current.transfers.map(t=>t.id===id?transfer:t)
+      : [transfer,...catalogRef.current.transfers.filter(t=>t.id!==id)];
+    catalogRef.current={...catalogRef.current,transfers:nextTransfers};
+    renderCatalog(catalogRef.current);
+
+    try{
+      const result=await telegramGateway.upload(file,{
+        folderId:options.folderId,
+        signal:controller.signal,
+        resumeState:options.resumeState,
+        onProgress:(p)=>{
+          const task=activeTransferTasks.current.get(id);
+          if(task&&p.resumeState)task.resumeState=p.resumeState;
+          const updatedTransfer:Transfer={
+            ...transfer,
+            stageBytes:p.bytes,
+            bytes:p.expectedBytes||file.size,
+            status:p.phase==='queued'?'completed':'saving',
+            direction:'upload',
+            kind:kindFor(file.type||'',file.name),
+            resumeState:p.resumeState||task?.resumeState
           };
-          updateCatalogState(updatedCatalog);
-          void commitCatalog(updatedCatalog);
-          void telegramGateway.syncCatalogToTelegram(updatedCatalog);
-          notify(t(`“${file.name}” uploaded to your Telegram Saved Messages.`,`“${file.name}” আপনার টেলিগ্রাম সেভড মেসেজে আপলোড হয়েছে।`));
-        }catch(err:unknown){
-          const msg=err instanceof Error?err.message:'Upload failed';
-          const failed={
-            ...catalogRef.current,
-            transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:msg.includes('cancelled')?('cancelled' as const):('failed' as const),error:msg}:item)
-          };
-          catalogRef.current=failed;renderCatalog(failed);
-          notify(msg.includes('cancelled')?t('Upload cancelled.','আপলোড বাতিল করা হয়েছে।'):msg);
-        }finally{
-          controllers.current.delete(id);
+          const updated={...catalogRef.current,transfers:catalogRef.current.transfers.map(item=>item.id===id?updatedTransfer:item)};
+          catalogRef.current=updated;
+          renderCatalog(updated);
         }
+      });
+
+      if(file.type.startsWith('image/')){
+        try{
+          const localUrl=URL.createObjectURL(file);
+          thumbnailCache.set(result.file.id,localUrl);
+        }catch{}
+      }
+      void saveOriginal(result.file.id,file);
+      const updatedCatalog={
+        ...catalogRef.current,
+        files:[result.file,...catalogRef.current.files.filter(f=>f.id!==result.file.id)],
+        transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'completed' as const,stageBytes:file.size,error:undefined}:item)
+      };
+      updateCatalogState(updatedCatalog);
+      void commitCatalog(updatedCatalog);
+      void telegramGateway.syncCatalogToTelegram(updatedCatalog);
+      activeTransferTasks.current.delete(id);
+      notify(t(`“${file.name}” uploaded to your Telegram Saved Messages.`,`“${file.name}” আপনার টেলিগ্রাম সেভড মেসেজে আপলোড হয়েছে।`));
+    }catch(err:unknown){
+      const isPause=controller.signal.aborted&&controller.signal.reason==='paused';
+      const isCancel=controller.signal.aborted&&controller.signal.reason==='cancelled';
+      const isNetwork=(err&&typeof err==='object'&&'isNetwork' in err)||(typeof navigator!=='undefined'&&!navigator.onLine);
+      const msg=err instanceof Error?err.message:String(err);
+      const task=activeTransferTasks.current.get(id);
+      const savedResume=(err&&typeof err==='object'&&'resumeState' in err?(err as {resumeState?:{fileId:string;startPart:number}}).resumeState:undefined)||task?.resumeState;
+
+      if(task&&savedResume)task.resumeState=savedResume;
+
+      if(isCancel||msg.includes('cancelled')){
+        activeTransferTasks.current.delete(id);
+        const failed={
+          ...catalogRef.current,
+          transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'cancelled' as const,error:msg}:item)
+        };
+        catalogRef.current=failed;
+        renderCatalog(failed);
+        notify(t('Upload cancelled.','আপলোড বাতিল করা হয়েছে।'));
+      }else if(isPause||isNetwork||msg.includes('paused')||msg.includes('offline')){
+        const failed={
+          ...catalogRef.current,
+          transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'paused' as const,resumeState:savedResume,error:isNetwork?t('Network offline','ইন্টারনেট বিচ্ছিন্ন'):undefined}:item)
+        };
+        catalogRef.current=failed;
+        renderCatalog(failed);
+        notify(isNetwork?t('Upload paused due to network issue. It will resume automatically when connected.','ইন্টারনেট সমস্যার কারণে আপলোড সাময়িক স্থগিত হয়েছে। নেট আসলে স্বয়ংক্রিয়ভাবে শুরু হবে।'):t('Upload paused.','আপলোড সাময়িক স্থগিত হয়েছে।'));
+      }else{
+        activeTransferTasks.current.delete(id);
+        const failed={
+          ...catalogRef.current,
+          transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'failed' as const,error:msg}:item)
+        };
+        catalogRef.current=failed;
+        renderCatalog(failed);
+        notify(msg);
+      }
+    }finally{
+      controllers.current.delete(id);
+    }
+  };
+  const upload=async(list:FileList|File[])=>{
+    const files=Array.from(list);if(!files.length||!readyRef.current)return;
+    if(resumeTarget.current){
+      const targetId=resumeTarget.current;
+      resumeTarget.current=undefined;
+      const targetTransfer=catalogRef.current.transfers.find(t=>t.id===targetId);
+      if(targetTransfer){
+        const matchedFile=files.find(f=>f.name===targetTransfer.name&&f.size===targetTransfer.bytes)||files[0];
+        if(matchedFile){
+          await executeUploadSingle(matchedFile,{
+            existingTransferId:targetId,
+            resumeState:targetTransfer.resumeState
+          });
+          if(fileInput.current)fileInput.current.value='';
+          return;
+        }
+      }
+    }
+    if(!serverMode && account?.telegram_connected){
+      for(const file of files){
+        await executeUploadSingle(file,{folderId});
       }
       if(fileInput.current)fileInput.current.value='';
       return;
@@ -677,22 +849,100 @@ export default function Drive() {
     setCatalog(previous=>({...previous,transfers:previous.transfers.filter(item=>item.status==='saving')}));
   };
   const cancelTransfer=async(id:string)=>{
+    const task=activeTransferTasks.current.get(id);
+    if(task){
+      task.controller.abort('cancelled');
+      activeTransferTasks.current.delete(id);
+    }
+    controllers.current.get(id)?.abort();
+    controllers.current.delete(id);
+    cancelUploads.current.add(id);
+
     if(serverMode){
-      controllers.current.get(id)?.abort();
       const current=catalogRef.current.transfers.find(item=>item.id===id);
       const descriptor=gateway.pendingUploads().find(item=>item.id===id||item.uploadId===id);
       if(current?.state==='PREPARING'&&!descriptor?.uploadId){transientTransfers.current.delete(id);controllers.current.delete(id);applyServerCatalog({...catalogRef.current,transfers:catalogRef.current.transfers.filter(item=>item.id!==id)});notify(t('Preparation paused. Any uncertain server reservation remains recoverable.','প্রস্তুতি থেমেছে। অনিশ্চিত সার্ভার রিজার্ভেশন থাকলে তা রিকভার করা যাবে।'));return;}
       const transferId=descriptor?.uploadId||id;
       try{await gateway.cancelTransfer(transferId);await refreshServer();}catch(error){notify(explainError(error));}return;
     }
-    cancelUploads.current.add(id);await setCatalog(previous=>({...previous,files:previous.files.filter(file=>file.id!==id),transfers:previous.transfers.map(item=>item.id===id?{...item,status:'cancelled'}:item)}),{remove:[id]});
+
+    const next={
+      ...catalogRef.current,
+      transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'cancelled' as const,error:'Transfer cancelled'}:item)
+    };
+    catalogRef.current=next;
+    renderCatalog(next);
+    notify(t('Transfer cancelled.','ট্রান্সফার বাতিল করা হয়েছে।'));
   };
-  const pauseTransfer=(id:string)=>{controllers.current.get(id)?.abort();};
+  const pauseTransfer=(id:string)=>{
+    const task=activeTransferTasks.current.get(id);
+    if(task){
+      task.controller.abort('paused');
+      const next={
+        ...catalogRef.current,
+        transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'paused' as const,resumeState:task.resumeState}:item)
+      };
+      catalogRef.current=next;
+      renderCatalog(next);
+      notify(t('Transfer paused.','ট্রান্সফার সাময়িক স্থগিত করা হয়েছে।'));
+      return;
+    }
+    controllers.current.get(id)?.abort();
+  };
+  const resumeTransfer=async(id:string)=>{
+    const task=activeTransferTasks.current.get(id);
+    const transfer=catalogRef.current.transfers.find(t=>t.id===id);
+    if(!transfer)return;
+
+    if(transfer.direction==='download'||task?.type==='download'){
+      const file=catalogRef.current.files.find(f=>f.name===transfer.name);
+      if(!file||!file.remoteMessageId){
+        notify(t('Cannot find original file in Telegram to resume download.','ডাউনলোড পুনরায় শুরু করতে মূল ফাইল পাওয়া যায়নি।'));
+        return;
+      }
+      download(file,{
+        resumeTransferId:id,
+        startOffset:task?.resumeState?.downloadedBytes||transfer.resumeState?.downloadedBytes||0,
+        existingChunks:task?.accumulatedChunks
+      });
+      return;
+    }
+
+    if(task&&task.file){
+      executeUploadSingle(task.file,{
+        existingTransferId:id,
+        folderId:task.folderId,
+        resumeState:task.resumeState||transfer.resumeState
+      });
+      return;
+    }
+
+    resumeTarget.current=id;
+    notify(t(`Please select "${transfer.name}" again to resume from where it left off.`,`যেখান থেকে বন্ধ হয়েছিল সেখান থেকে পুনরায় শুরু করতে দয়া করে "${transfer.name}" ফাইলটি আবার বেছে নিন।`));
+    fileInput.current?.click();
+  };
   const retryTransfer=async(id:string)=>{
+    if(!serverMode){
+      await resumeTransfer(id);
+      return;
+    }
     const pending=gateway.pendingUploads().find(item=>item.id===id||item.uploadId===id);
     if(pending){resumeTarget.current=pending.id;fileInput.current?.click();return;}
     try{await gateway.retryTransfer(id);await refreshServer();}catch(error){notify(explainError(error));}
   };
+  useEffect(()=>{
+    const handleOnline=()=>{
+      notify(t('Internet connection restored. Resuming transfers…','ইন্টারনেট সংযোগ ফিরে এসেছে। ট্রান্সফার পুনরায় শুরু হচ্ছে…'));
+      for(const id of activeTransferTasks.current.keys()){
+        const tr=catalogRef.current.transfers.find(t=>t.id===id);
+        if(tr?.status==='paused'){
+          void resumeTransfer(id);
+        }
+      }
+    };
+    window.addEventListener('online',handleOnline);
+    return()=>window.removeEventListener('online',handleOnline);
+  },[]);
   const exportCatalog=async()=>{
     try{const blob=serverMode?await gateway.exportCatalog():new Blob([JSON.stringify({...catalog,exportedAt:new Date().toISOString(),storage:'browser-demo',notice:'Metadata only. Uploaded originals remain in this browser; no Telegram references exist in demo mode.'},null,2)],{type:'application/json'});downloadBlob(blob,'filedeck-catalog.json');notify(t('Catalog exported. Originals are not included.','ক্যাটালগ রপ্তানি হয়েছে। মূল ফাইল এতে নেই।'));}catch(error){notify(explainError(error));}
   };
@@ -777,6 +1027,9 @@ export default function Drive() {
   const pageTitle=currentFolder?.name||t(...viewLabels[view]);
   const isDefault=view==='all'&&!folderId&&!search;
   const transferLabel=(item:Transfer)=>{
+    if(item.status==='paused'){
+      return t('Paused (ready to resume)','বিরতি (চালিয়ে নেওয়ার জন্য প্রস্তুত)');
+    }
     if(!serverMode){
       if(item.direction==='download'){
         return item.status==='completed'?t('Download completed','ডাউনলোড সম্পন্ন'):item.status==='failed'?t('Download failed','ডাউনলোড ব্যর্থ'):item.status==='cancelled'?t('Download cancelled','ডাউনলোড বাতিল'):t('Downloading from Telegram…','টেলিগ্রাম থেকে ডাউনলোড হচ্ছে…');
@@ -790,7 +1043,7 @@ export default function Drive() {
     return labels[item.state||'']?t(...labels[item.state||'']):t('Checking transfer status','ট্রান্সফারের অবস্থা যাচাই হচ্ছে');
   };
   const activeTransfers=catalog.transfers.filter(item=>!['completed','cancelled','failed'].includes(item.status));
-  const recentFinishedTransfers=catalog.transfers.filter(item=>['completed','failed'].includes(item.status)).slice(0,3);
+  const recentFinishedTransfers=catalog.transfers.filter(item=>sessionTransfersRef.current.has(item.id)&&['completed','failed'].includes(item.status)).slice(0,3);
   const showDock=!dismissedDock&&(activeTransfers.length>0||recentFinishedTransfers.length>0);
   return <div className="app-shell" onDragEnter={event=>{if(event.dataTransfer.types.includes('Files')){event.preventDefault();draggingDepth.current++;setDragging(true);}}} onDragLeave={event=>{event.preventDefault();if(--draggingDepth.current<=0){setDragging(false);draggingDepth.current=0;}}} onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();setDragging(false);draggingDepth.current=0;upload(event.dataTransfer.files);}}>
     {dialog?.type==='settings'&&!serverMode&&<input ref={importInput} type="file" accept="application/json,.json" hidden aria-label="Import catalog JSON" onChange={event=>{const file=event.target.files?.[0];if(file)prepareImport(file);}}/>}
@@ -843,10 +1096,15 @@ export default function Drive() {
                 <span>{formatBytes(item.bytes)} · {transferLabel(item)}</span>
                 {isActive&&<div className="transfer-progress-wrap"><div className="transfer-progress"><span style={{width:`${progressPct}%`}}/></div><div className="transfer-progress-meta"><span>{formatBytes(progressBytes)} / {formatBytes(item.bytes)}</span><strong>{progressPct}%</strong></div></div>}
               </div>
-              <span className={`transfer-status ${item.status}`}>{item.status==='completed'?<CheckCheck size={18}/>:isActive?<LoaderCircle size={18} className="spin"/>:<Info size={18}/>}<span>{isActive?`${progressPct}% · ${transferLabel(item)}`:transferLabel(item)}</span></span>
+              <span className={`transfer-status ${item.status}`}>
+                {item.status==='completed'?<CheckCheck size={18}/>:item.status==='paused'?<Pause size={18}/>:isActive?<LoaderCircle size={18} className="spin"/>:<Info size={18}/>}
+                <span>{item.status==='paused'?`${progressPct}% · ${transferLabel(item)}`:isActive?`${progressPct}% · ${transferLabel(item)}`:transferLabel(item)}</span>
+              </span>
+              {item.status==='saving'&&<button className="button button-light" onClick={()=>pauseTransfer(item.id)}><Pause size={14}/><span>{t('Pause','বিরতি')}</span></button>}
+              {item.status==='paused'&&<button className="button button-light" onClick={()=>resumeTransfer(item.id)}><Play size={14}/><span>{t('Resume','চালিয়ে যান')}</span></button>}
               {serverMode&&controllers.current.has(item.id)&&<button className="button button-light" onClick={()=>pauseTransfer(item.id)}>{t('Pause','বিরতি')}</button>}
               {isActive&&<button className="icon-button" aria-label="Cancel transfer" onClick={()=>cancelTransfer(item.id)}><X size={18}/></button>}
-              {item.status==='failed'&&<button className="button button-light" onClick={()=>serverMode?retryTransfer(item.id):fileInput.current?.click()}>{serverMode?t('Retry safely','আবার চেষ্টা'):t('Choose file again','ফাইল আবার বেছে নিন')}</button>}
+              {item.status==='failed'&&<button className="button button-light" onClick={()=>serverMode?retryTransfer(item.id):resumeTransfer(item.id)}>{serverMode?t('Retry safely','আবার চেষ্টা'):t('Resume / Retry','পুনরায় চেষ্টা')}</button>}
             </div>;
           }):<Empty icon={<ArrowUpFromLine size={30}/>} title={t('A clear runway','সব প্রস্তুত')} text={t('Your uploads and downloads will appear here, with real-time progress.','আপনার আপলোড ও ডাউনলোডের রিয়েল-টাইম অগ্রগতি এখানে দেখা যাবে।')} action={t('Upload your first file','প্রথম ফাইল আপলোড করুন')} onAction={()=>fileInput.current?.click()}/>}
         </section>:<section className="files-section"><div className="file-toolbar">
@@ -864,7 +1122,13 @@ export default function Drive() {
       <aside className={`transfer-dock ${dockOpen ? '' : 'minimized'}`} aria-label={t('Transfers','স্থানান্তর')}>
         <div className="transfer-dock-header">
           <div className="transfer-dock-title">
-            {activeTransfers.length > 0 ? <LoaderCircle size={15} className="spin text-green"/> : <CheckCheck size={15} className="text-green"/>}
+            {activeTransfers.some(t => t.status === 'saving') ? (
+              <LoaderCircle size={15} className="spin text-green"/>
+            ) : activeTransfers.some(t => t.status === 'paused') ? (
+              <Pause size={15} style={{color: '#d97706'}}/>
+            ) : (
+              <CheckCheck size={15} className="text-green"/>
+            )}
             <strong>
               {activeTransfers.length > 0
                 ? t(`${activeTransfers.length} active transfer(s)`,`${activeTransfers.length}টি স্থানান্তর চলছে`)
@@ -900,18 +1164,28 @@ export default function Drive() {
                       <div className="transfer-dock-item-name" title={item.name}>{item.name}</div>
                       <div className="transfer-dock-progress-track">
                         <div
-                          className={`transfer-dock-progress-fill ${item.status === 'completed' ? 'completed' : ''}`}
+                          className={`transfer-dock-progress-fill ${item.status === 'completed' ? 'completed' : item.status === 'paused' ? 'paused' : ''}`}
                           style={{width: `${item.status === 'completed' ? 100 : progressPct}%`}}
                         />
                       </div>
                       <div className="transfer-dock-item-meta">
                         <span>{formatBytes(progressBytes)} / {formatBytes(item.bytes)}</span>
-                        <strong>{item.status === 'completed' ? (item.direction === 'download' ? t('Downloaded','ডাউনলোড সম্পন্ন') : t('Uploaded','আপলোড সম্পন্ন')) : `${progressPct}%`}</strong>
+                        <strong>{item.status === 'completed' ? (item.direction === 'download' ? t('Downloaded','ডাউনলোড সম্পন্ন') : t('Uploaded','আপলোড সম্পন্ন')) : item.status === 'paused' ? t('Paused','বিরতি') : `${progressPct}%`}</strong>
                       </div>
                     </div>
                     {isActive && (
                       <div className="transfer-dock-item-action">
-                        <button className="icon-button" onClick={()=>cancelTransfer(item.id)} aria-label={`Cancel ${item.name}`} title="Cancel">
+                        {item.status === 'saving' && (
+                          <button className="icon-button" onClick={()=>pauseTransfer(item.id)} aria-label={`Pause ${item.name}`} title={t('Pause','বিরতি')}>
+                            <Pause size={13}/>
+                          </button>
+                        )}
+                        {item.status === 'paused' && (
+                          <button className="icon-button resume-button" onClick={()=>resumeTransfer(item.id)} aria-label={`Resume ${item.name}`} title={t('Resume','চালিয়ে যান')}>
+                            <Play size={13}/>
+                          </button>
+                        )}
+                        <button className="icon-button" onClick={()=>cancelTransfer(item.id)} aria-label={`Cancel ${item.name}`} title={t('Cancel','বাতিল')}>
                           <X size={13}/>
                         </button>
                       </div>

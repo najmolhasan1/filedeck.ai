@@ -2,6 +2,7 @@ import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';
 import { computeCheck } from 'telegram/Password.js';
 import { generateRandomBigInt } from 'telegram/Helpers.js';
+import bigInt from 'big-integer';
 import { Catalog, DriveFile, formatBytes, kindFor, MAX_FILE_BYTES, Transfer } from './catalog';
 import { commitCatalog, loadCatalog, saveCatalog } from './storage';
 import { NativeFolderSync } from './folder-sync';
@@ -270,44 +271,99 @@ export class TelegramBrowserGateway {
     fileName: string,
     mimeType: string,
     signal?: AbortSignal,
-    onProgress?: (bytes: number, total: number) => void,
-    caption?: string
-  ): Promise<number> {
+    onProgress?: (bytes: number, total: number, resumeState: { fileId: string; startPart: number }) => void,
+    caption?: string,
+    resumeState?: { fileId?: string | bigInt.BigInteger; startPart?: number }
+  ): Promise<{ remoteMessageId: number; fileId: string }> {
     const client = await this.getClient();
     const partSize = 512 * 1024; // 512 KB per chunk
     const totalParts = Math.max(1, Math.ceil(file.size / partSize));
     const isBig = file.size > 10 * 1024 * 1024;
-    // 64-bit random ID for MTProto file handle
-    const fileId = generateRandomBigInt();
+    // 64-bit ID for MTProto file handle (preserved across pauses/retries)
+    const fileId: bigInt.BigInteger = resumeState?.fileId
+      ? (typeof resumeState.fileId === 'string' ? bigInt(resumeState.fileId) : resumeState.fileId)
+      : generateRandomBigInt();
+    const startPart = Math.max(0, Math.min(totalParts - 1, resumeState?.startPart ?? 0));
 
-    for (let i = 0; i < totalParts; i++) {
-      if (signal?.aborted) throw new Error('Upload cancelled');
+    for (let i = startPart; i < totalParts; i++) {
+      if (signal?.aborted) {
+        const isPause = signal.reason === 'paused';
+        const err = new Error(isPause ? 'Upload paused' : 'Upload cancelled') as Error & {
+          resumeState?: { fileId: string; startPart: number };
+          isPause?: boolean;
+        };
+        err.resumeState = { fileId: fileId.toString(), startPart: i };
+        err.isPause = isPause;
+        throw err;
+      }
+
       const start = i * partSize;
       const end = Math.min(file.size, start + partSize);
       const chunk = file.slice(start, end);
       const arrayBuffer = await chunk.arrayBuffer();
       const bytes = Buffer.from(arrayBuffer);
 
-      if (isBig) {
-        await client.invoke(
-          new Api.upload.SaveBigFilePart({
-            fileId,
-            filePart: i,
-            fileTotalParts: totalParts,
-            bytes,
-          })
-        );
-      } else {
-        await client.invoke(
-          new Api.upload.SaveFilePart({
-            fileId,
-            filePart: i,
-            bytes,
-          })
-        );
+      let attempts = 0;
+      while (true) {
+        if (signal?.aborted) {
+          const isPause = signal.reason === 'paused';
+          const err = new Error(isPause ? 'Upload paused' : 'Upload cancelled') as Error & {
+            resumeState?: { fileId: string; startPart: number };
+            isPause?: boolean;
+          };
+          err.resumeState = { fileId: fileId.toString(), startPart: i };
+          err.isPause = isPause;
+          throw err;
+        }
+
+        try {
+          if (isBig) {
+            await client.invoke(
+              new Api.upload.SaveBigFilePart({
+                fileId,
+                filePart: i,
+                fileTotalParts: totalParts,
+                bytes,
+              })
+            );
+          } else {
+            await client.invoke(
+              new Api.upload.SaveFilePart({
+                fileId,
+                filePart: i,
+                bytes,
+              })
+            );
+          }
+          break;
+        } catch (err: unknown) {
+          if (signal?.aborted) {
+            const isPause = signal.reason === 'paused';
+            const pauseErr = new Error(isPause ? 'Upload paused' : 'Upload cancelled') as Error & {
+              resumeState?: { fileId: string; startPart: number };
+              isPause?: boolean;
+            };
+            pauseErr.resumeState = { fileId: fileId.toString(), startPart: i };
+            pauseErr.isPause = isPause;
+            throw pauseErr;
+          }
+
+          attempts++;
+          const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+          if (isOffline || attempts >= 4) {
+            const netErr = new Error(isOffline ? 'Network offline' : (err instanceof Error ? err.message : 'Network error')) as Error & {
+              resumeState?: { fileId: string; startPart: number };
+              isNetwork?: boolean;
+            };
+            netErr.resumeState = { fileId: fileId.toString(), startPart: i };
+            netErr.isNetwork = true;
+            throw netErr;
+          }
+          await new Promise((res) => setTimeout(res, 1000 * Math.min(attempts, 3)));
+        }
       }
 
-      onProgress?.(end, file.size);
+      onProgress?.(end, file.size, { fileId: fileId.toString(), startPart: i + 1 });
     }
 
     const inputFile = isBig
@@ -355,7 +411,7 @@ export class TelegramBrowserGateway {
       }
     }
 
-    return messageId;
+    return { remoteMessageId: messageId, fileId: fileId.toString() };
   }
 
   public async upload(
@@ -363,7 +419,13 @@ export class TelegramBrowserGateway {
     options: {
       folderId?: string | null;
       signal?: AbortSignal;
-      onProgress?: (value: { bytes: number; expectedBytes: number; phase: 'preparing' | 'staging' | 'queued' }) => void;
+      resumeState?: { fileId?: string | bigInt.BigInteger; startPart?: number };
+      onProgress?: (value: {
+        bytes: number;
+        expectedBytes: number;
+        phase: 'preparing' | 'staging' | 'queued';
+        resumeState?: { fileId: string; startPart: number };
+      }) => void;
     } = {}
   ): Promise<{ transfer: Transfer; file: DriveFile }> {
     if (file.size > MAX_FILE_BYTES) {
@@ -380,17 +442,36 @@ export class TelegramBrowserGateway {
       options.onProgress?.({ bytes: 0, expectedBytes: file.size, phase: 'staging' });
 
       // Direct chunked upload to Telegram Saved Messages via MTProto
-      remoteMessageId = await this.uploadFileDirect(
+      const result = await this.uploadFileDirect(
         file,
         file.name,
         file.type,
         options.signal,
-        (bytes, total) => {
-          options.onProgress?.({ bytes, expectedBytes: total, phase: 'staging' });
-        }
+        (bytes, total, currentResumeState) => {
+          options.onProgress?.({
+            bytes,
+            expectedBytes: total,
+            phase: 'staging',
+            resumeState: currentResumeState,
+          });
+        },
+        undefined,
+        options.resumeState
       );
+      remoteMessageId = result.remoteMessageId;
     } catch (error: unknown) {
-      if (options.signal?.aborted) throw new Error('Upload cancelled');
+      if (options.signal?.aborted) {
+        const isPause = options.signal.reason === 'paused';
+        const err = new Error(isPause ? 'Upload paused' : 'Upload cancelled') as Error & {
+          resumeState?: { fileId: string; startPart: number };
+          isPause?: boolean;
+        };
+        if (error && typeof error === 'object' && 'resumeState' in error) {
+          err.resumeState = (error as { resumeState?: { fileId: string; startPart: number } }).resumeState;
+        }
+        err.isPause = isPause;
+        throw err;
+      }
       throw error;
     }
 
@@ -435,48 +516,103 @@ export class TelegramBrowserGateway {
   public async uploadNativeStream(
     fileInfo: { name: string; size: number; mimeType: string; uri: string },
     signal?: AbortSignal,
-    onProgress?: (bytes: number, total: number) => void,
-    caption?: string
-  ): Promise<number> {
+    onProgress?: (bytes: number, total: number, resumeState: { fileId: string; startPart: number }) => void,
+    caption?: string,
+    resumeState?: { fileId?: string | bigInt.BigInteger; startPart?: number }
+  ): Promise<{ remoteMessageId: number; fileId: string }> {
     const client = await this.getClient();
     const partSize = 512 * 1024; // 512 KB per chunk
     const totalParts = Math.max(1, Math.ceil(fileInfo.size / partSize));
     const isBig = fileInfo.size > 10 * 1024 * 1024;
-    const fileId = generateRandomBigInt();
+    const fileId: bigInt.BigInteger = resumeState?.fileId
+      ? (typeof resumeState.fileId === 'string' ? bigInt(resumeState.fileId) : resumeState.fileId)
+      : generateRandomBigInt();
+    const startPart = Math.max(0, Math.min(totalParts - 1, resumeState?.startPart ?? 0));
 
-    for (let i = 0; i < totalParts; i++) {
-      if (signal?.aborted) throw new Error('Upload cancelled');
+    for (let i = startPart; i < totalParts; i++) {
+      if (signal?.aborted) {
+        const isPause = signal.reason === 'paused';
+        const err = new Error(isPause ? 'Upload paused' : 'Upload cancelled') as Error & {
+          resumeState?: { fileId: string; startPart: number };
+          isPause?: boolean;
+        };
+        err.resumeState = { fileId: fileId.toString(), startPart: i };
+        err.isPause = isPause;
+        throw err;
+      }
+
       const start = i * partSize;
       const length = Math.min(partSize, fileInfo.size - start);
 
-      const partResult = await NativeFolderSync.readFilePart({
-        uri: fileInfo.uri,
-        offset: start,
-        length,
-      });
+      let attempts = 0;
+      while (true) {
+        if (signal?.aborted) {
+          const isPause = signal.reason === 'paused';
+          const err = new Error(isPause ? 'Upload paused' : 'Upload cancelled') as Error & {
+            resumeState?: { fileId: string; startPart: number };
+            isPause?: boolean;
+          };
+          err.resumeState = { fileId: fileId.toString(), startPart: i };
+          err.isPause = isPause;
+          throw err;
+        }
 
-      const bytes = Buffer.from(partResult.data, 'base64');
+        try {
+          const partResult = await NativeFolderSync.readFilePart({
+            uri: fileInfo.uri,
+            offset: start,
+            length,
+          });
 
-      if (isBig) {
-        await client.invoke(
-          new Api.upload.SaveBigFilePart({
-            fileId,
-            filePart: i,
-            fileTotalParts: totalParts,
-            bytes,
-          })
-        );
-      } else {
-        await client.invoke(
-          new Api.upload.SaveFilePart({
-            fileId,
-            filePart: i,
-            bytes,
-          })
-        );
+          const bytes = Buffer.from(partResult.data, 'base64');
+
+          if (isBig) {
+            await client.invoke(
+              new Api.upload.SaveBigFilePart({
+                fileId,
+                filePart: i,
+                fileTotalParts: totalParts,
+                bytes,
+              })
+            );
+          } else {
+            await client.invoke(
+              new Api.upload.SaveFilePart({
+                fileId,
+                filePart: i,
+                bytes,
+              })
+            );
+          }
+          break;
+        } catch (err: unknown) {
+          if (signal?.aborted) {
+            const isPause = signal.reason === 'paused';
+            const pauseErr = new Error(isPause ? 'Upload paused' : 'Upload cancelled') as Error & {
+              resumeState?: { fileId: string; startPart: number };
+              isPause?: boolean;
+            };
+            pauseErr.resumeState = { fileId: fileId.toString(), startPart: i };
+            pauseErr.isPause = isPause;
+            throw pauseErr;
+          }
+
+          attempts++;
+          const isOffline = typeof navigator !== 'undefined' && !navigator.onLine;
+          if (isOffline || attempts >= 4) {
+            const netErr = new Error(isOffline ? 'Network offline' : (err instanceof Error ? err.message : 'Network error')) as Error & {
+              resumeState?: { fileId: string; startPart: number };
+              isNetwork?: boolean;
+            };
+            netErr.resumeState = { fileId: fileId.toString(), startPart: i };
+            netErr.isNetwork = true;
+            throw netErr;
+          }
+          await new Promise((res) => setTimeout(res, 1000 * Math.min(attempts, 3)));
+        }
       }
 
-      onProgress?.(start + bytes.length, fileInfo.size);
+      onProgress?.(start + length, fileInfo.size, { fileId: fileId.toString(), startPart: i + 1 });
     }
 
     const inputFile = isBig
@@ -524,7 +660,7 @@ export class TelegramBrowserGateway {
       }
     }
 
-    return messageId;
+    return { remoteMessageId: messageId, fileId: fileId.toString() };
   }
 
   public async uploadNative(
@@ -532,7 +668,13 @@ export class TelegramBrowserGateway {
     options: {
       folderId?: string | null;
       signal?: AbortSignal;
-      onProgress?: (value: { bytes: number; expectedBytes: number; phase: 'preparing' | 'staging' | 'queued' }) => void;
+      resumeState?: { fileId?: string | bigInt.BigInteger; startPart?: number };
+      onProgress?: (value: {
+        bytes: number;
+        expectedBytes: number;
+        phase: 'preparing' | 'staging' | 'queued';
+        resumeState?: { fileId: string; startPart: number };
+      }) => void;
     } = {}
   ): Promise<{ transfer: Transfer; file: DriveFile }> {
     if (fileInfo.size > MAX_FILE_BYTES) {
@@ -548,15 +690,34 @@ export class TelegramBrowserGateway {
     try {
       options.onProgress?.({ bytes: 0, expectedBytes: fileInfo.size, phase: 'staging' });
 
-      remoteMessageId = await this.uploadNativeStream(
+      const result = await this.uploadNativeStream(
         fileInfo,
         options.signal,
-        (bytes, total) => {
-          options.onProgress?.({ bytes, expectedBytes: total, phase: 'staging' });
-        }
+        (bytes, total, currentResumeState) => {
+          options.onProgress?.({
+            bytes,
+            expectedBytes: total,
+            phase: 'staging',
+            resumeState: currentResumeState,
+          });
+        },
+        undefined,
+        options.resumeState
       );
+      remoteMessageId = result.remoteMessageId;
     } catch (error: unknown) {
-      if (options.signal?.aborted) throw new Error('Upload cancelled');
+      if (options.signal?.aborted) {
+        const isPause = options.signal.reason === 'paused';
+        const err = new Error(isPause ? 'Upload paused' : 'Upload cancelled') as Error & {
+          resumeState?: { fileId: string; startPart: number };
+          isPause?: boolean;
+        };
+        if (error && typeof error === 'object' && 'resumeState' in error) {
+          err.resumeState = (error as { resumeState?: { fileId: string; startPart: number } }).resumeState;
+        }
+        err.isPause = isPause;
+        throw err;
+      }
       throw error;
     }
 
@@ -600,12 +761,25 @@ export class TelegramBrowserGateway {
     remoteMessageId: number,
     optionsOrProgress?:
       | ((progress: number, downloaded?: number, total?: number) => void)
-      | { signal?: AbortSignal; onProgress?: (progress: number, downloaded?: number, total?: number) => void }
+      | {
+          signal?: AbortSignal;
+          startOffset?: number;
+          existingChunks?: (Buffer | Uint8Array)[];
+          onProgress?: (progress: number, downloaded?: number, total?: number) => void;
+          onChunk?: (chunk: Buffer | Uint8Array, totalDownloaded: number) => void;
+        }
   ): Promise<Blob> {
     const onProgress = typeof optionsOrProgress === 'function' ? optionsOrProgress : optionsOrProgress?.onProgress;
     const signal = typeof optionsOrProgress === 'object' ? optionsOrProgress?.signal : undefined;
+    const startOffset = (typeof optionsOrProgress === 'object' ? optionsOrProgress?.startOffset : 0) || 0;
+    const onChunk = typeof optionsOrProgress === 'object' ? optionsOrProgress?.onChunk : undefined;
 
-    if (signal?.aborted) throw new Error('Download cancelled');
+    if (signal?.aborted) {
+      const isPause = signal.reason === 'paused';
+      const err = new Error(isPause ? 'Download paused' : 'Download cancelled') as Error & { isPause?: boolean };
+      err.isPause = isPause;
+      throw err;
+    }
 
     const client = await this.getClient();
     const messages = await client.getMessages('me', { ids: [remoteMessageId] });
@@ -625,25 +799,80 @@ export class TelegramBrowserGateway {
       return Number.isFinite(n) ? n : 0;
     };
 
-    const buffer = await client.downloadMedia(message, {
-      progressCallback: (downloaded: unknown, total: unknown) => {
-        if (signal?.aborted) throw new Error('Download cancelled');
+    let totalSize = 0;
+    if (message.media && 'document' in message.media && message.media.document && 'size' in message.media.document) {
+      totalSize = toNum(message.media.document.size);
+    }
+
+    const accumulatedChunks: (Buffer | Uint8Array)[] = (typeof optionsOrProgress === 'object' && optionsOrProgress?.existingChunks)
+      ? [...optionsOrProgress.existingChunks]
+      : [];
+    let downloadedBytes = startOffset;
+
+    if (onProgress && totalSize > 0 && downloadedBytes > 0) {
+      onProgress(Math.min(1, downloadedBytes / totalSize), downloadedBytes, totalSize);
+    }
+
+    try {
+      const downloadIter = client.iterDownload({
+        file: message.media,
+        offset: bigInt(startOffset),
+        requestSize: 512 * 1024,
+      });
+
+      for await (const chunk of downloadIter) {
+        if (signal?.aborted) {
+          const isPause = signal.reason === 'paused';
+          const err = new Error(isPause ? 'Download paused' : 'Download cancelled') as Error & {
+            isPause?: boolean;
+            resumeState?: { downloadedBytes: number };
+            chunks?: (Buffer | Uint8Array)[];
+          };
+          err.isPause = isPause;
+          err.resumeState = { downloadedBytes };
+          err.chunks = accumulatedChunks;
+          throw err;
+        }
+
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        accumulatedChunks.push(buf);
+        downloadedBytes += buf.length;
+        onChunk?.(buf, downloadedBytes);
+
         if (onProgress) {
-          const d = toNum(downloaded);
-          const t = toNum(total);
-          if (t > 0) {
-            onProgress(Math.min(1, Math.max(0, d / t)), d, t);
-          } else if (d > 0) {
-            onProgress(0, d, 0);
+          if (totalSize > 0) {
+            onProgress(Math.min(1, Math.max(0, downloadedBytes / totalSize)), downloadedBytes, totalSize);
+          } else {
+            onProgress(0, downloadedBytes, 0);
           }
         }
-      },
-    });
-    if (!buffer) {
-      throw new Error('Failed to download media bytes.');
+      }
+    } catch (err: unknown) {
+      if (signal?.aborted) {
+        const isPause = signal.reason === 'paused';
+        const pauseErr = new Error(isPause ? 'Download paused' : 'Download cancelled') as Error & {
+          isPause?: boolean;
+          resumeState?: { downloadedBytes: number };
+          chunks?: (Buffer | Uint8Array)[];
+        };
+        pauseErr.isPause = isPause;
+        pauseErr.resumeState = { downloadedBytes };
+        pauseErr.chunks = accumulatedChunks;
+        throw pauseErr;
+      }
+
+      const netErr = new Error(err instanceof Error ? err.message : 'Download interrupted') as Error & {
+        isNetwork?: boolean;
+        resumeState?: { downloadedBytes: number };
+        chunks?: (Buffer | Uint8Array)[];
+      };
+      netErr.isNetwork = true;
+      netErr.resumeState = { downloadedBytes };
+      netErr.chunks = accumulatedChunks;
+      throw netErr;
     }
-    const bytes = typeof buffer === 'string' ? new TextEncoder().encode(buffer) : new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.length);
-    return new Blob([bytes as unknown as BlobPart]);
+
+    return new Blob(accumulatedChunks as unknown as BlobPart[]);
   }
 
   public async deleteFile(file: DriveFile): Promise<void> {

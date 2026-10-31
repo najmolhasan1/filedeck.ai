@@ -45,12 +45,16 @@
 .transfer-dock-progress-fill.completed{background:#418255}
 .transfer-dock-item-meta{display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#85967b}
 .transfer-dock-item-meta strong{color:#405f3b}
-.transfer-dock-item-action{flex-shrink:0}
+.transfer-dock-item-action{display:flex;align-items:center;gap:4px;flex-shrink:0}
 .transfer-dock-item-action .icon-button{width:24px;height:24px;color:#9baa90}
 .transfer-dock-item-action .icon-button:hover{color:#b34d4d;background:#faecec}
+.transfer-dock-item-action .icon-button.resume-button:hover{color:#3b7c4d;background:#eaf3e5}
+.transfer-dock-progress-fill.paused{background:#f59e0b}
+.transfer-status.paused{color:#d97706}
 .transfer-dock-footer{margin-top:8px;padding-top:8px;border-top:1px solid #edf1e6;text-align:right}
 .transfer-dock-footer .text-button{font-size:11px;font-weight:600;color:#3c5d38;margin-left:auto}
 .text-green{color:#457d59}
+.text-amber{color:#d97706}
 
 /* Preview Modal Media Loading */
 .preview-loading-card{display:flex;flex-direction:column;align-items:center;justify-content:center;padding:35px 25px;text-align:center;gap:10px;color:#6d845e}

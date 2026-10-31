@@ -23,11 +23,12 @@ export type Folder = {
 };
 export type Transfer = {
   id: string; name: string; bytes: number;
-  status: 'saving' | 'queued' | 'sending' | 'verifying' | 'waiting' | 'reconciling' | 'completed' | 'failed' | 'cancelled';
+  status: 'saving' | 'queued' | 'sending' | 'verifying' | 'waiting' | 'reconciling' | 'completed' | 'failed' | 'cancelled' | 'paused';
   error?: string; createdAt: string; state?: string; stagedBytes?: number; stageBytes?: number; providerBytes?: number;
   retryAfterSeconds?: number; source?: 'server';
   direction?: 'upload' | 'download';
   kind?: FileKind;
+  resumeState?: { fileId?: string; startPart?: number; downloadedBytes?: number };
 };
 export type Catalog = {schemaVersion: 1; files: DriveFile[]; folders: Folder[]; transfers: Transfer[]};
 export const MAX_FILE_BYTES = 500 * 1024 * 1024;
