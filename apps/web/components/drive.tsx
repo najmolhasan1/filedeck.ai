@@ -11,6 +11,8 @@ import { parseCatalogImport } from '@/lib/catalog-import';
 import { pickFolderForSync, listFilesInFolder, registerWebDirectoryHandle } from '@/lib/folder-sync';
 
 const thumbnailCache = new Map<string, string>();
+const videoFrameCache = new Map<string, string>();
+const mediaBlobUrlCache = new Map<string, string>();
 
 type ActiveTransferTask = {
   id: string;
@@ -186,20 +188,20 @@ export default function Drive() {
     }
     try{
       let playUrl='';
-      if(thumbnailCache.has(file.id)){
-        playUrl=thumbnailCache.get(file.id)!;
+      if(mediaBlobUrlCache.has(file.id)){
+        playUrl=mediaBlobUrlCache.get(file.id)!;
       }else{
         const cached=await getOriginal(file.originalId||file.id);
         if(cached){
           playUrl=URL.createObjectURL(cached);
           audioObjectUrlRef.current=playUrl;
-          thumbnailCache.set(file.id,playUrl);
+          mediaBlobUrlCache.set(file.id,playUrl);
         }else if(file.remoteMessageId){
           const blob=await telegramGateway.downloadFile(file.remoteMessageId);
           void saveOriginal(file.id,blob);
           playUrl=URL.createObjectURL(blob);
           audioObjectUrlRef.current=playUrl;
-          thumbnailCache.set(file.id,playUrl);
+          mediaBlobUrlCache.set(file.id,playUrl);
         }else if(file.asset){
           playUrl=file.asset;
         }else if(serverMode&&file.source==='server'){
@@ -422,14 +424,24 @@ export default function Drive() {
     if(!preview)return;let disposed=false;let localUrl:string|undefined;
     setPreviewUrl(null);setPreviewError('');setPreviewProgress(null);setPreviewBytes(null);
     (async()=>{
-      if (thumbnailCache.has(preview.id)) {
-        if (!disposed) setPreviewUrl(thumbnailCache.get(preview.id)!);
+      if(preview.asset){
+        if(!disposed)setPreviewUrl(preview.asset);
+        return;
+      }
+      const isMedia = safePreview(preview)==='video' || safePreview(preview)==='audio';
+      if(isMedia && mediaBlobUrlCache.has(preview.id)){
+        if(!disposed)setPreviewUrl(mediaBlobUrlCache.get(preview.id)!);
+        return;
+      }
+      if(!isMedia && thumbnailCache.has(preview.id)){
+        if(!disposed)setPreviewUrl(thumbnailCache.get(preview.id)!);
         return;
       }
       const cached = await getOriginal(preview.originalId || preview.id);
       if (cached && !disposed) {
         localUrl = URL.createObjectURL(cached);
-        thumbnailCache.set(preview.id, localUrl);
+        if(isMedia) mediaBlobUrlCache.set(preview.id, localUrl);
+        else thumbnailCache.set(preview.id, localUrl);
         setPreviewUrl(localUrl);
         return;
       }
@@ -451,7 +463,8 @@ export default function Drive() {
         if (!disposed) {
           void saveOriginal(preview.id, blob);
           localUrl = URL.createObjectURL(blob);
-          thumbnailCache.set(preview.id, localUrl);
+          if(isMedia) mediaBlobUrlCache.set(preview.id, localUrl);
+          else thumbnailCache.set(preview.id, localUrl);
           setPreviewUrl(localUrl);
         }
         return;
@@ -464,9 +477,10 @@ export default function Drive() {
         if(!response.ok){const data=await response.json().catch(()=>null);throw new Error(data?.error?.message||'A safe preview is unavailable. Download the original to open it locally.');}
         localUrl=URL.createObjectURL(await response.blob());if(!disposed)setPreviewUrl(localUrl);return;
       }
-      if(preview.asset){if(!disposed)setPreviewUrl(preview.asset);return;}
       const blob=await getOriginal(preview.originalId||preview.id);if(!blob)throw new Error('The original is no longer in this browser.');
-      localUrl=URL.createObjectURL(blob);if(!disposed)setPreviewUrl(localUrl);
+      localUrl=URL.createObjectURL(blob);
+      if(isMedia) mediaBlobUrlCache.set(preview.id, localUrl);
+      if(!disposed)setPreviewUrl(localUrl);
     })().catch(error=>{if(!disposed)setPreviewError(error.message);});
     return()=>{disposed=true;};
   },[preview,gateway,serverMode]);
@@ -1147,7 +1161,13 @@ export default function Drive() {
   };
   const removeFiles=async(ids:string[])=>{
     try{
-      for(const id of ids) thumbnailCache.delete(id);
+      for(const id of ids) {
+        thumbnailCache.delete(id);
+        videoFrameCache.delete(id);
+        const mediaUrl = mediaBlobUrlCache.get(id);
+        if(mediaUrl && mediaUrl.startsWith('blob:')) URL.revokeObjectURL(mediaUrl);
+        mediaBlobUrlCache.delete(id);
+      }
       if(serverMode)await runServer(async()=>{for(const id of ids)await gateway.remove(id);});
       else {
         const remaining=catalogRef.current.files.filter(file=>!ids.includes(file.id));
@@ -1820,7 +1840,21 @@ export default function Drive() {
     </Modal>}
     {duplicatePrompt&&<Modal title={t('You already have this original','এই মূল ফাইলটি আপনার কাছে আছে')} onClose={()=>{duplicateDecision.current?.('cancel');duplicateDecision.current=null;setDuplicatePrompt(null);}}><p className="modal-description">{t(`“${duplicatePrompt.name}” has the same verified SHA-256 and byte count as “${duplicatePrompt.existing.name}” in this browser. Keep another original copy or organize the existing bytes in this location.`,`এই ব্রাউজারে “${duplicatePrompt.name}” এবং “${duplicatePrompt.existing.name}”-এর যাচাই করা SHA-256 ও বাইট সংখ্যা এক। আরেকটি মূল কপি রাখুন অথবা একই বাইট এই ফোল্ডারে গুছিয়ে রাখুন।`)}</p><div className="duplicate-options"><button className="button button-light" onClick={()=>{duplicateDecision.current?.('keep');duplicateDecision.current=null;setDuplicatePrompt(null);}}>{t('Keep another copy','আরেকটি কপি রাখুন')}</button><button className="button primary" disabled={!duplicatePrompt.reuseAvailable} onClick={()=>{duplicateDecision.current?.('reuse');duplicateDecision.current=null;setDuplicatePrompt(null);}}>{t('Reuse existing original','বিদ্যমান মূল ফাইল ব্যবহার করুন')}</button></div>{!duplicatePrompt.reuseAvailable&&<p className="fine-print">{t('The previous original is missing from this browser. Keep another copy to save these bytes.','আগের মূল ফাইল এই ব্রাউজারে নেই। বাইট সেভ করতে আরেকটি কপি রাখুন।')}</p>}<button className="text-button auth-start-over" onClick={()=>{duplicateDecision.current?.('cancel');duplicateDecision.current=null;setDuplicatePrompt(null);}}>{t('Cancel this upload','এই আপলোড বাতিল')}</button></Modal>}
     {importCandidate&&<Modal title={t('Restore your organization?','ফোল্ডার ও ট্যাগ ফিরিয়ে আনবেন?')} onClose={()=>setImportCandidate(null)}><p className="modal-description">{t(`Import ${importCandidate.folders.length} folders and ${importCandidate.files.length} file records? This replaces the demo catalog metadata. Existing original bytes are kept; the export itself does not contain them. Files imported from another browser may be unavailable.`,`${importCandidate.folders.length}টি ফোল্ডার ও ${importCandidate.files.length}টি ফাইল রেকর্ড আমদানি করবেন? এটি ডেমো ক্যাটালগের মেটাডেটা প্রতিস্থাপন করবে। বিদ্যমান মূল ফাইল থাকবে, রপ্তানিতে মূল ফাইল নেই। অন্য ব্রাউজারের ফাইল অনুপস্থিত থাকতে পারে।`)}</p>{importError&&<p className="form-error" role="alert">{importError}</p>}<div className="modal-actions"><button className="button button-light" onClick={()=>setImportCandidate(null)}>{t('Cancel','বাতিল')}</button><button className="button primary" onClick={restoreImport}>{t('Import metadata','মেটাডেটা আমদানি')}</button></div></Modal>}
-    {preview&&<Modal title={preview.name} onClose={()=>setPreview(null)} wide><div className="viewer"><div className="viewer-media">{previewError?<div className="preview-fallback"><Info size={34}/><p>{previewError}</p></div>:!previewUrl?<div className="preview-loading-card"><LoaderCircle size={32} className="spin"/><strong>{t('Loading preview from Telegram…','টেলিগ্রাম থেকে প্রিভিউ লোড হচ্ছে…')}</strong>{previewProgress!==null&&<><div className="preview-progress-track"><div className="preview-progress-fill" style={{width:`${previewProgress}%`}}/></div><p>{previewBytes?`${formatBytes(previewBytes.current)} / ${formatBytes(previewBytes.total)} (${previewProgress}%)`:`${previewProgress}%`}</p></>}{!previewProgress&&<p>{preview.name} · {formatBytes(preview.bytes)}</p>}</div>:safePreview(preview)==='image'?<img src={previewUrl} alt={preview.name}/>:safePreview(preview)==='video'?<video src={previewUrl} controls playsInline onError={()=>setPreviewError(t('This codec cannot be played here. Download the original to open it locally.','এই কোডেক এখানে চলবে না। মূল ফাইল ডাউনলোড করে খুলুন।'))}/>:safePreview(preview)==='audio'?<div className="audio-preview"><Music2 size={55}/><audio src={previewUrl} controls onError={()=>setPreviewError(t('This audio format cannot be played here. Download the original.','এই অডিও ফরম্যাট এখানে চলবে না। মূল ফাইল ডাউনলোড করুন।'))}/></div>:safePreview(preview)==='pdf'?<iframe src={previewUrl} title={preview.name} sandbox="" referrerPolicy="no-referrer"/>:<div className="preview-fallback"><TypeIcon kind={preview.kind} size={48}/><h3>{t('Some things are best opened at home.','কিছু ফাইল নিজের অ্যাপে খোলাই ভালো।')}</h3><p>{t('A safe preview isn’t available for this format. Download the original to open it with your favorite app.','এই ফরম্যাটের নিরাপদ প্রিভিউ নেই। মূল ফাইল ডাউনলোড করে উপযুক্ত অ্যাপে খুলুন।')}</p></div>}</div><div className="viewer-actions"><button className="button primary" onClick={()=>download(preview)}><Download size={16}/>{t('Download original','মূল ফাইল ডাউনলোড')}</button><button className={`button button-light ${preview.favorite?'favorited':''}`} onClick={()=>favorite(preview)}><Star size={16} fill={preview.favorite?'currentColor':'none'}/>{preview.favorite?t('Favorited','পছন্দে আছে'):t('Favorite','পছন্দে রাখুন')}</button></div><dl className="file-details"><div><dt>{t('Original filename','মূল ফাইলের নাম')}</dt><dd>{preview.originalName}</dd></div><div><dt>{t('Size','আকার')}</dt><dd>{formatBytes(preview.bytes)} <span>({preview.bytes.toLocaleString()} bytes)</span></dd></div><div><dt>{t('Added','যোগ হয়েছে')}</dt><dd>{formatDate(preview.createdAt)}</dd></div><div><dt>{t('Location','অবস্থান')}</dt><dd>{catalog.folders.find(folder=>folder.id===preview.folderId)?.name||t('My drive','আমার ড্রাইভ')}</dd></div><div><dt>{t('Source','উৎস')}</dt><dd>{preview.source==='server'?t('Your Telegram storage','আপনার টেলিগ্রাম স্টোরেজ'):preview.asset?t('Bundled demo sample','ডেমোর নমুনা'):t('This browser · not Telegram','এই ব্রাউজার · টেলিগ্রাম নয়')}</dd></div><div><dt>{t('File type','ফাইলের ধরন')}</dt><dd>{preview.mime}</dd></div>{preview.sha256&&<div className="hash-detail"><dt>SHA-256</dt><dd>{preview.sha256}</dd></div>}</dl><div className="tags-section"><label htmlFor="tag-input"><Tag size={15}/>{t('Tags','ট্যাগ')}</label><div className="tag-list">{preview.tags.map(tag=><button key={tag} onClick={()=>{const next=preview.tags.filter(item=>item!==tag);updateTags(preview,next);}}>{tag}<X size={12}/></button>)}<input id="tag-input" value={tagValue} onChange={event=>setTagValue(event.target.value)} placeholder={t('Add a tag + Enter','ট্যাগ লিখে Enter দিন')} maxLength={40} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();const tag=tagValue.trim();if(tag&&!preview.tags.includes(tag)){const next=[...preview.tags,tag];updateTags(preview,next);}setTagValue('');}}}/></div></div></div></Modal>}
+    {preview&&<Modal title={preview.name} onClose={()=>setPreview(null)} wide><div className="viewer"><div className="viewer-media">{previewError?<div className="preview-fallback"><Info size={34}/><p>{previewError}</p></div>:!previewUrl?<div className="preview-loading-card"><LoaderCircle size={32} className="spin"/><strong>{t('Loading preview from Telegram…','টেলিগ্রাম থেকে প্রিভিউ লোড হচ্ছে…')}</strong>{previewProgress!==null&&<><div className="preview-progress-track"><div className="preview-progress-fill" style={{width:`${previewProgress}%`}}/></div><p>{previewBytes?`${formatBytes(previewBytes.current)} / ${formatBytes(previewBytes.total)} (${previewProgress}%)`:`${previewProgress}%`}</p></>}{!previewProgress&&<p>{preview.name} · {formatBytes(preview.bytes)}</p>}</div>:safePreview(preview)==='image'?<img src={previewUrl} alt={preview.name}/>:safePreview(preview)==='video'?(
+  <div className="video-player-box" style={{width:'100%',display:'flex',justifyContent:'center',alignItems:'center',background:'#000',borderRadius:'8px',overflow:'hidden',minHeight:'220px'}}>
+    <video
+      key={previewUrl}
+      src={previewUrl}
+      controls
+      playsInline
+      autoPlay
+      style={{maxWidth:'100%',maxHeight:'65vh',display:'block',margin:'auto'}}
+      onError={()=>{
+        setPreviewError(t('This video codec cannot be played directly in this browser. Download the original to open it locally.','এই ভিডিও কোডেকটি ব্রাউজারে সরাসরি চালানো যাচ্ছে না। মূল ফাইলটি ডাউনলোড করে খুলুন।'));
+      }}
+    />
+  </div>
+):safePreview(preview)==='audio'?<div className="audio-preview"><Music2 size={55}/><audio src={previewUrl} controls onError={()=>setPreviewError(t('This audio format cannot be played here. Download the original.','এই অডিও ফরম্যাট এখানে চলবে না। মূল ফাইল ডাউনলোড করুন।'))}/></div>:safePreview(preview)==='pdf'?<iframe src={previewUrl} title={preview.name} sandbox="" referrerPolicy="no-referrer"/>:<div className="preview-fallback"><TypeIcon kind={preview.kind} size={48}/><h3>{t('Some things are best opened at home.','কিছু ফাইল নিজের অ্যাপে খোলাই ভালো।')}</h3><p>{t('A safe preview isn’t available for this format. Download the original to open it with your favorite app.','এই ফরম্যাটের নিরাপদ প্রিভিউ নেই। মূল ফাইল ডাউনলোড করে উপযুক্ত অ্যাপে খুলুন।')}</p></div>}</div><div className="viewer-actions"><button className="button primary" onClick={()=>download(preview)}><Download size={16}/>{t('Download original','মূল ফাইল ডাউনলোড')}</button><button className={`button button-light ${preview.favorite?'favorited':''}`} onClick={()=>favorite(preview)}><Star size={16} fill={preview.favorite?'currentColor':'none'}/>{preview.favorite?t('Favorited','পছন্দে আছে'):t('Favorite','পছন্দে রাখুন')}</button></div><dl className="file-details"><div><dt>{t('Original filename','মূল ফাইলের নাম')}</dt><dd>{preview.originalName}</dd></div><div><dt>{t('Size','আকার')}</dt><dd>{formatBytes(preview.bytes)} <span>({preview.bytes.toLocaleString()} bytes)</span></dd></div><div><dt>{t('Added','যোগ হয়েছে')}</dt><dd>{formatDate(preview.createdAt)}</dd></div><div><dt>{t('Location','অবস্থান')}</dt><dd>{catalog.folders.find(folder=>folder.id===preview.folderId)?.name||t('My drive','আমার ড্রাইভ')}</dd></div><div><dt>{t('Source','উৎস')}</dt><dd>{preview.source==='server'?t('Your Telegram storage','আপনার টেলিগ্রাম স্টোরেজ'):preview.asset?t('Bundled demo sample','ডেমোর নমুনা'):t('This browser · not Telegram','এই ব্রাউজার · টেলিগ্রাম নয়')}</dd></div><div><dt>{t('File type','ফাইলের ধরন')}</dt><dd>{preview.mime}</dd></div>{preview.sha256&&<div className="hash-detail"><dt>SHA-256</dt><dd>{preview.sha256}</dd></div>}</dl><div className="tags-section"><label htmlFor="tag-input"><Tag size={15}/>{t('Tags','ট্যাগ')}</label><div className="tag-list">{preview.tags.map(tag=><button key={tag} onClick={()=>{const next=preview.tags.filter(item=>item!==tag);updateTags(preview,next);}}>{tag}<X size={12}/></button>)}<input id="tag-input" value={tagValue} onChange={event=>setTagValue(event.target.value)} placeholder={t('Add a tag + Enter','ট্যাগ লিখে Enter দিন')} maxLength={40} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();const tag=tagValue.trim();if(tag&&!preview.tags.includes(tag)){const next=[...preview.tags,tag];updateTags(preview,next);}setTagValue('');}}}/></div></div></div></Modal>}
   </div>;
 }
 
@@ -1891,12 +1925,14 @@ function extractVideoFrame(blob: Blob): Promise<string> {
 }
 
 function LocalThumbnail({file}:{file:DriveFile}) {
-  const [url,setUrl]=useState(()=>thumbnailCache.get(file.id)||'');
-  const [loading,setLoading]=useState(!thumbnailCache.has(file.id));
+  const isVideo = file.kind === 'video';
+  const [url,setUrl]=useState(()=>isVideo?(videoFrameCache.get(file.id)||''):(thumbnailCache.get(file.id)||''));
+  const [loading,setLoading]=useState(()=>isVideo?!videoFrameCache.has(file.id):!thumbnailCache.has(file.id));
   useEffect(()=>{
     let disposed=false;
-    if(thumbnailCache.has(file.id)){
-      setUrl(thumbnailCache.get(file.id)!);
+    const cachedFrame = isVideo ? videoFrameCache.get(file.id) : thumbnailCache.get(file.id);
+    if(cachedFrame){
+      setUrl(cachedFrame);
       setLoading(false);
       return;
     }
@@ -1904,19 +1940,21 @@ function LocalThumbnail({file}:{file:DriveFile}) {
       try {
         setLoading(true);
         if(file.asset){
-          if(file.kind==='video'){
+          if(isVideo){
+            mediaBlobUrlCache.set(file.id, file.asset);
             const resp=await fetch(file.asset);
             const blob=await resp.blob();
             const frame=await extractVideoFrame(blob);
             if(frame&&!disposed){
-              thumbnailCache.set(file.id,frame);
+              videoFrameCache.set(file.id,frame);
               setUrl(frame);
               setLoading(false);
               return;
             }
           }
           if(!disposed){
-            thumbnailCache.set(file.id,file.asset);
+            if(isVideo) videoFrameCache.set(file.id, file.asset);
+            else thumbnailCache.set(file.id, file.asset);
             setUrl(file.asset);
             setLoading(false);
             return;
@@ -1924,38 +1962,42 @@ function LocalThumbnail({file}:{file:DriveFile}) {
         }
         const cached = await getOriginal(file.originalId || file.id);
         if(cached && !disposed){
-          if(file.kind==='video'){
+          const localUrl = URL.createObjectURL(cached);
+          if(isVideo){
+            mediaBlobUrlCache.set(file.id, localUrl);
             const frameUrl=await extractVideoFrame(cached);
             if(frameUrl&&!disposed){
-              thumbnailCache.set(file.id,frameUrl);
+              videoFrameCache.set(file.id,frameUrl);
               setUrl(frameUrl);
               setLoading(false);
               return;
             }
+          }else{
+            thumbnailCache.set(file.id, localUrl);
+            setUrl(localUrl);
+            setLoading(false);
+            return;
           }
-          const localUrl = URL.createObjectURL(cached);
-          thumbnailCache.set(file.id, localUrl);
-          setUrl(localUrl);
-          setLoading(false);
-          return;
         }
         if(file.remoteMessageId){
           const blob = await telegramGateway.downloadFile(file.remoteMessageId);
           if(blob && !disposed){
             void saveOriginal(file.id, blob);
-            if(file.kind==='video'){
+            const localUrl = URL.createObjectURL(blob);
+            if(isVideo){
+              mediaBlobUrlCache.set(file.id, localUrl);
               const frameUrl=await extractVideoFrame(blob);
               if(frameUrl&&!disposed){
-                thumbnailCache.set(file.id,frameUrl);
+                videoFrameCache.set(file.id,frameUrl);
                 setUrl(frameUrl);
                 setLoading(false);
                 return;
               }
+            }else{
+              thumbnailCache.set(file.id, localUrl);
+              setUrl(localUrl);
+              setLoading(false);
             }
-            const localUrl = URL.createObjectURL(blob);
-            thumbnailCache.set(file.id, localUrl);
-            setUrl(localUrl);
-            setLoading(false);
           }
         }
       } catch (e) {
@@ -1965,7 +2007,7 @@ function LocalThumbnail({file}:{file:DriveFile}) {
       }
     })();
     return()=>{disposed=true;};
-  },[file.id,file.originalId,file.remoteMessageId,file.name,file.kind,file.asset]);
+  },[file.id,file.originalId,file.remoteMessageId,file.name,file.kind,file.asset,isVideo]);
 
   if (url) {
     return (

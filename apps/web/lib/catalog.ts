@@ -61,10 +61,12 @@ export function formatBytes(bytes: number): string {
   return `${Number((bytes / 1024 ** i).toFixed(i ? 1 : 0))} ${['B','KB','MB','GB','TB'][i]}`;
 }
 export function safePreview(file: DriveFile): 'image' | 'video' | 'audio' | 'pdf' | null {
-  if (['image/jpeg','image/png','image/webp','image/gif','image/avif'].includes(file.mime)) return 'image';
-  if (['video/mp4','video/webm','video/ogg'].includes(file.mime)) return 'video';
-  if (['audio/mpeg','audio/wav','audio/ogg','audio/mp4'].includes(file.mime)) return 'audio';
-  if (file.mime === 'application/pdf') return 'pdf';
+  const mime = (file.mime || '').toLowerCase();
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  if (['image/jpeg','image/png','image/webp','image/gif','image/avif','image/svg+xml'].includes(mime) || ['jpg','jpeg','png','webp','gif','svg','avif','bmp','ico'].includes(ext) || file.kind === 'image') return 'image';
+  if (['video/mp4','video/webm','video/ogg','video/quicktime','video/x-matroska','video/3gpp','video/avi'].includes(mime) || ['mp4','webm','mov','mkv','m4v','ogv','3gp'].includes(ext) || file.kind === 'video') return 'video';
+  if (['audio/mpeg','audio/wav','audio/ogg','audio/mp4','audio/aac','audio/flac','audio/x-m4a'].includes(mime) || ['mp3','wav','ogg','m4a','aac','flac','wma'].includes(ext) || file.kind === 'audio') return 'audio';
+  if (mime === 'application/pdf' || ext === 'pdf') return 'pdf';
   return null;
 }
 export function canMoveFolder(folders: Folder[], id: string, parentId: string | null): boolean {
