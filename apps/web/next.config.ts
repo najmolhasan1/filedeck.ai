@@ -1,6 +1,8 @@
 import type { NextConfig } from 'next';
 
 const config: NextConfig = {
+  output: process.env.BUILD_TARGET === 'mobile' ? 'export' : undefined,
+  images: { unoptimized: true },
   poweredByHeader: false,
   webpack: (config, { isServer }) => {
     if (!isServer) {

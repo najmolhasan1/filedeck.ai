@@ -12,3 +12,10 @@ coverage/
 playwright-report/
 test-results/
 .vercel/
+out/
+apps/web/out/
+*.apk
+apps/web/android/.gradle/
+apps/web/android/app/build/
+apps/web/android/build/
+apps/web/public/filedeck.apk

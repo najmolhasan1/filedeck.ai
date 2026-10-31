@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">filedeck.ai</string>
+    <string name="title_activity_main">filedeck.ai</string>
+    <string name="package_name">ai.filedeck.app</string>
+    <string name="custom_url_scheme">ai.filedeck.app</string>
+</resources>

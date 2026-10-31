@@ -10,9 +10,14 @@
     "build": "next build --webpack",
     "start": "next start --hostname 0.0.0.0",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts",
+    "cap:sync": "cap sync android"
   },
   "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/preferences": "^8.0.1",
     "lucide-react": "^0.468.0",
     "next": "^16.0.0",
     "react": "^19.2.0",
@@ -20,6 +25,7 @@
     "telegram": "^2.26.22"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0"
   }
