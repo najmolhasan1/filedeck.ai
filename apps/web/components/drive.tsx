@@ -5,6 +5,7 @@ import { Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpFrom
 import { canMoveFolder, Catalog, DriveFile, FileKind, Folder, Transfer, formatBytes, initialCatalog, kindFor, MAX_FILE_BYTES, safePreview } from '@/lib/catalog';
 import { commitCatalog, getOriginal, loadCatalog } from '@/lib/storage';
 import { APIError, ServerGateway, type ServerUser, type UploadDescriptor } from '@/lib/server';
+import { telegramGateway, type TelegramUser } from '@/lib/telegram-client';
 import ConnectPanel from './connect-panel';
 import { parseCatalogImport } from '@/lib/catalog-import';
 
@@ -40,7 +41,7 @@ export default function Drive() {
   const emptyCatalog=():Catalog=>({schemaVersion:1,files:[],folders:[],transfers:[]});
   const [catalog,renderCatalog]=useState<Catalog>(()=>serverMode?emptyCatalog():initialCatalog());
   const [ready,setReady]=useState(false);
-  const [account,setAccount]=useState<ServerUser|null>(null);
+  const [account,setAccount]=useState<ServerUser|TelegramUser|null>(null);
   const [serverError,setServerError]=useState('');
   const [syncJob,setSyncJob]=useState<Record<string,unknown>|null>(null);
   const [pendingUploads,setPendingUploads]=useState<UploadDescriptor[]>([]);
@@ -119,7 +120,9 @@ export default function Drive() {
     if(!readyRef.current)return Promise.resolve(catalogRef.current);
     const operation=writes.current.then(async()=>{
       const next=typeof update==='function'?update(catalogRef.current):update;
-      await commitCatalog(next,originals);catalogRef.current=next;renderCatalog(next);return next;
+      await commitCatalog(next,originals);catalogRef.current=next;renderCatalog(next);
+      if(account?.telegram_connected)void telegramGateway.syncCatalogToTelegram(next);
+      return next;
     });
     writes.current=operation.catch(()=>notify('Could not save your changes. Browser storage may be full or unavailable.'));
     return operation;
@@ -141,11 +144,27 @@ export default function Drive() {
     if(serverMode){
       gateway.bootstrap().then(()=>refreshServer()).catch(error=>{if(!cancelled){const message=error instanceof APIError&&error.status===401?'Connect your Telegram account to open your drive.':error instanceof Error?error.message:'The configured service is unavailable.';setServerError(message);readyRef.current=false;setReady(false);}});
     }else{
-      loadCatalog().then(saved=>{
+      (async()=>{
+        try {
+          const auth = await telegramGateway.authState();
+          if (auth.state === 'ready') {
+            const me = await telegramGateway.me();
+            if (!cancelled) setAccount(me);
+            const saved = await telegramGateway.loadCatalog();
+            if (!cancelled) {
+              renderCatalog(saved);
+              catalogRef.current = saved;
+              readyRef.current = true;
+              setReady(true);
+            }
+            return;
+          }
+        } catch {}
+        const saved = await loadCatalog().catch(()=>null);
         if(cancelled)return;
         if(saved?.schemaVersion===1){saved.transfers=saved.transfers.map(item=>item.status==='saving'?{...item,status:'failed',error:'Saving was interrupted. Choose the original file to try again.'}:item);renderCatalog(saved);catalogRef.current=saved;}
         readyRef.current=true;setReady(true);
-      }).catch(()=>{if(!cancelled){readyRef.current=true;setReady(true);notify('Browser storage is unavailable. Changes cannot be saved.');}});
+      })().catch(()=>{if(!cancelled){readyRef.current=true;setReady(true);notify('Browser storage is unavailable. Changes cannot be saved.');}});
     }
     return()=>{cancelled=true;};
   },[serverMode,gateway,refreshServer,notify]);
@@ -179,6 +198,18 @@ export default function Drive() {
     if(!preview)return;let disposed=false;let localUrl:string|undefined;
     setPreviewUrl(null);setPreviewError('');
     (async()=>{
+      if (preview.remoteMessageId) {
+        if (!safePreview(preview)) {
+          if (!disposed) setPreviewUrl('unsupported');
+          return;
+        }
+        const blob = await telegramGateway.downloadFile(preview.remoteMessageId);
+        if (!disposed) {
+          localUrl = URL.createObjectURL(blob);
+          setPreviewUrl(localUrl);
+        }
+        return;
+      }
       if(preview.source==='server'){
         if(['video','audio'].includes(safePreview(preview)||'')){if(!disposed)setPreviewUrl(gateway.contentUrl(preview.id));return;}
         if(!safePreview(preview)){if(!disposed)setPreviewUrl('unsupported');return;}
@@ -236,12 +267,44 @@ export default function Drive() {
   const downloadBlob=(blob:Blob,name:string)=>{const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name.replace(/[\x00-\x1f]/g,'');a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
   const download=async(file:DriveFile)=>{
     try{
+      if(file.remoteMessageId){
+        notify(t('Downloading original from Telegram…','টেলিগ্রাম থেকে মূল ফাইল ডাউনলোড হচ্ছে…'));
+        const blob=await telegramGateway.downloadFile(file.remoteMessageId);
+        downloadBlob(blob,file.name);
+        notify(t('Download completed.','ডাউনলোড সম্পন্ন হয়েছে।'));
+        return;
+      }
       if(file.source==='server'){const a=document.createElement('a');a.href=gateway.contentUrl(file.id);a.download=file.name;a.click();notify(t('Original download requested.','মূল ফাইল ডাউনলোডের অনুরোধ করা হয়েছে।'));return;}
       const blob=file.asset?await fetch(file.asset).then(response=>{if(!response.ok)throw new Error();return response.blob();}):await getOriginal(file.originalId||file.id);if(!blob)throw new Error();downloadBlob(blob,file.name);notify(t('Original download started.','মূল ফাইল ডাউনলোড শুরু হয়েছে।'));
     }catch{notify(t('The original is unavailable.','মূল ফাইল পাওয়া যাচ্ছে না।'));}finally{setMenu(null);}
   };
   const upload=async(list:FileList|File[])=>{
     const files=Array.from(list);if(!files.length||!readyRef.current)return;
+    if(!serverMode && account?.telegram_connected){
+      for(const file of files){
+        const id=crypto.randomUUID();
+        const transfer:Transfer={id,name:file.name,bytes:file.size,status:'saving',createdAt:new Date().toISOString(),stageBytes:0,providerBytes:0};
+        const next={...catalogRef.current,transfers:[transfer,...catalogRef.current.transfers]};
+        catalogRef.current=next;renderCatalog(next);
+        try{
+          const result=await telegramGateway.upload(file,{folderId,onProgress:(p)=>{
+            const updatedTransfer:Transfer={...transfer,stageBytes:p.bytes,status:p.phase==='queued'?'completed':'saving'};
+            const updated={...catalogRef.current,transfers:catalogRef.current.transfers.map(item=>item.id===id?updatedTransfer:item)};
+            catalogRef.current=updated;renderCatalog(updated);
+          }});
+          const updatedCatalog={...catalogRef.current,files:[result.file,...catalogRef.current.files.filter(f=>f.id!==result.file.id)],transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'completed' as const}:item)};
+          catalogRef.current=updatedCatalog;renderCatalog(updatedCatalog);
+          notify(t(`“${file.name}” uploaded to your Telegram Saved Messages.`,`“${file.name}” আপনার টেলিগ্রাম সেভড মেসেজে আপলোড হয়েছে।`));
+        }catch(err:unknown){
+          const msg=err instanceof Error?err.message:'Upload failed';
+          const failed={...catalogRef.current,transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'failed' as const,error:msg}:item)};
+          catalogRef.current=failed;renderCatalog(failed);
+          notify(msg);
+        }
+      }
+      if(fileInput.current)fileInput.current.value='';
+      return;
+    }
     if(serverMode){
       const epoch=sessionEpoch.current;const resumeId=resumeTarget.current;resumeTarget.current=undefined;
       for(const file of resumeId?files.slice(0,1):files){
@@ -349,7 +412,17 @@ export default function Drive() {
     }catch(error){setFormError(explainError(error));}finally{setSavingForm(false);}
   };
   const removeFiles=async(ids:string[])=>{
-    try{if(serverMode)await runServer(async()=>{for(const id of ids)await gateway.remove(id);});else {const remaining=catalogRef.current.files.filter(file=>!ids.includes(file.id));const sources=[...new Set(catalogRef.current.files.filter(file=>ids.includes(file.id)).map(file=>file.originalId||file.id))].filter(source=>!remaining.some(file=>(file.originalId||file.id)===source));await setCatalog(previous=>({...previous,files:previous.files.filter(file=>!ids.includes(file.id))}),{remove:sources});}setSelected(new Set());closeDialog();notify(t('Removed from this workspace. Telegram originals are unchanged.','ওয়ার্কস্পেস থেকে সরানো হয়েছে। টেলিগ্রামের মূল ফাইল অপরিবর্তিত আছে।'));}catch(error){setFormError(explainError(error));}
+    try{
+      if(serverMode)await runServer(async()=>{for(const id of ids)await gateway.remove(id);});
+      else {
+        const remaining=catalogRef.current.files.filter(file=>!ids.includes(file.id));
+        const sources=[...new Set(catalogRef.current.files.filter(file=>ids.includes(file.id)).map(file=>file.originalId||file.id))].filter(source=>!remaining.some(file=>(file.originalId||file.id)===source));
+        const toDelete=catalogRef.current.files.filter(file=>ids.includes(file.id));
+        for(const f of toDelete){if(f.remoteMessageId)void telegramGateway.deleteFile(f);}
+        await setCatalog(previous=>({...previous,files:previous.files.filter(file=>!ids.includes(file.id))}),{remove:sources});
+      }
+      setSelected(new Set());closeDialog();notify(t('Removed from this workspace. Telegram originals are unchanged.','ওয়ার্কস্পেস থেকে সরানো হয়েছে। টেলিগ্রামের মূল ফাইল অপরিবর্তিত আছে।'));
+    }catch(error){setFormError(explainError(error));}
   };
   const deleteFolder=async(folder:Folder,toTrash:boolean)=>{
     try{
@@ -362,8 +435,15 @@ export default function Drive() {
   const clearServerSession=()=>{resetRuntime();setSelected(new Set());setMenu(null);setAccount(null);const empty=emptyCatalog();catalogRef.current=empty;renderCatalog(empty);setReady(false);readyRef.current=false;setPreview(null);setPendingUploads([]);closeDialog();setServerError('Signed out. Connect Telegram to open your drive.');};
   const signOut=async()=>{try{await gateway.logout();clearServerSession();notify(t('Signed out of this device.','এই ডিভাইস থেকে সাইন আউট হয়েছে।'));}catch(error){notify(explainError(error));}};
   const disconnect=async()=>{
-    try{const result=await gateway.disconnect();const pending=JSON.stringify(result).includes('pending');await gateway.logout().catch(()=>{});clearServerSession();notify(pending?t('Disconnect requested. Telegram revocation is pending.','সংযোগ বিচ্ছিন্ন করার অনুরোধ হয়েছে। টেলিগ্রামের সেশন বাতিলের অপেক্ষায়।'):t('Telegram session disconnected. Your messages are unchanged.','টেলিগ্রাম সেশন বিচ্ছিন্ন হয়েছে। আপনার মেসেজ অপরিবর্তিত আছে।'));}
-    catch(error){notify(explainError(error));}
+    if (serverMode) {
+      try{const result=await gateway.disconnect();const pending=JSON.stringify(result).includes('pending');await gateway.logout().catch(()=>{});clearServerSession();notify(pending?t('Disconnect requested. Telegram revocation is pending.','সংযোগ বিচ্ছিন্ন করার অনুরোধ হয়েছে। টেলিগ্রামের সেশন বাতিলের অপেক্ষায়।'):t('Telegram session disconnected. Your messages are unchanged.','টেলিগ্রাম সেশন বিচ্ছিন্ন হয়েছে। আপনার মেসেজ অপরিবর্তিত আছে।'));}
+      catch(error){notify(explainError(error));}
+    } else {
+      telegramGateway.resetSession();
+      setAccount(null);
+      closeDialog();
+      notify(t('Telegram session disconnected from this browser.','এই ব্রাউজার থেকে টেলিগ্রাম সেশন বিচ্ছিন্ন হয়েছে।'));
+    }
   };
   const countFor=(next:View)=>next==='all'?activeFiles.length:next==='favorites'?activeFiles.filter(f=>f.favorite).length:next==='trash'?catalog.files.filter(f=>f.trashedAt).length:next==='transfers'?catalog.transfers.filter(item=>!['completed','cancelled','failed'].includes(item.status)).length:0;
   const toggleSelected=(id:string)=>setSelected(previous=>{const next=new Set(previous);if(next.has(id))next.delete(id);else next.add(id);return next;});
@@ -429,16 +509,29 @@ export default function Drive() {
     {dialog&&<Modal title={dialog.type==='new-folder'?t('A new little space','নতুন একটি জায়গা'):dialog.type==='rename'?t('Rename file','ফাইলের নাম পরিবর্তন'):dialog.type==='move'?t('Move to a folder','ফোল্ডারে সরান'):dialog.type==='folder'?t('Manage folder','ফোল্ডার পরিচালনা'):dialog.type==='remove'?t('Remove from this workspace?','ওয়ার্কস্পেস থেকে সরাবেন?'):dialog.type==='connect'?t('Your Telegram, connected.','আপনার টেলিগ্রাম যুক্ত করুন।'):dialog.type==='settings'?t('Make yourself at home','আপনার মতো করে সাজান'):dialog.type==='security'?t('A clear view of your storage','আপনার স্টোরেজ সম্পর্কে'):dialog.type==='disconnect'?t('Disconnect Telegram?','টেলিগ্রাম বিচ্ছিন্ন করবেন?'):dialog.type==='recovery'?t('Recover from Telegram?','টেলিগ্রাম থেকে রিকভার করবেন?'):t('A little help getting started','শুরু করার নির্দেশনা')} onClose={closeDialog} wide={dialog.type==='settings'}>
       {(['new-folder','rename','move','folder'] as string[]).includes(dialog.type)&&<form onSubmit={submitForm}><p className="modal-description">{dialog.type==='rename'?t('This changes the display name in your drive. The original attachment keeps its name.','এটি ড্রাইভে দেখানো নাম বদলায়। মূল ফাইলের নাম বদলায় না।'):dialog.type==='move'?t('Organization changes here. Your original file stays just as it is.','ফাইল গুছিয়ে রাখুন। মূল ফাইল যেমন আছে তেমনই থাকবে।'):t('Give your files a place to belong. Folders stay inside your CloudNest catalog.','ফাইলগুলো গুছিয়ে রাখুন। ফোল্ডার CloudNest ক্যাটালগে থাকে।')}</p>{dialog.type!=='move'&&<label className="field-label">{t('Name','নাম')}<input autoFocus value={formValue} onChange={event=>setFormValue(event.target.value)} placeholder={t('Something worth keeping','মনে রাখার মতো কিছু')} maxLength={255} required/></label>}{(dialog.type==='move'||dialog.type==='folder')&&<label className="field-label">{t('Destination folder','যে ফোল্ডারে সরাবেন')}<select value={moveTarget} onChange={event=>setMoveTarget(event.target.value)}><option value="">{dialog.type==='folder'?t('Keep current location','বর্তমান অবস্থানে রাখুন'):t('My drive (root)','আমার ড্রাইভ (মূল)')}</option>{dialog.type==='folder'&&<option value="__root">{t('My drive (root)','আমার ড্রাইভ (মূল)')}</option>}{catalog.folders.filter(folder=>dialog.type!=='folder'||canMoveFolder(catalog.folders,dialog.folder.id,folder.id)).map(folder=><option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label>}{formError&&<p className="form-error" role="alert">{formError}</p>}<div className="modal-actions"><button type="button" className="button button-light" onClick={closeDialog}>{t('Cancel','বাতিল')}</button><button type="submit" disabled={savingForm} className="button primary">{dialog.type==='new-folder'?t('Create folder','ফোল্ডার তৈরি'):dialog.type==='move'?t('Move files','ফাইল সরান'):t('Save changes','সেভ করুন')}<ArrowRight size={15}/></button></div>{dialog.type==='folder'&&<div className="folder-delete"><p>{t('Removing a folder also removes its subfolders. What should happen to their files?','ফোল্ডার সরালে ভেতরের ফোল্ডারও সরবে। ফাইলগুলো কী করবেন?')}</p><button type="button" onClick={()=>deleteFolder(dialog.folder,false)}>{t('Remove folder & move files to My drive','ফোল্ডার সরিয়ে ফাইল আমার ড্রাইভে রাখুন')}</button><button type="button" className="danger-text" onClick={()=>deleteFolder(dialog.folder,true)}>{t('Remove folder & move files to trash','ফোল্ডার সরিয়ে ফাইল ট্র্যাশে রাখুন')}</button></div>}</form>}
       {dialog.type==='remove'&&<><div className="warning-icon"><Trash2 size={28}/></div><p className="modal-description">{serverMode?t(`Remove ${dialog.ids.length} file(s) from your app catalog. Their Telegram messages will remain untouched. A catalog tombstone prevents recovery scans from immediately importing them again.`,`${dialog.ids.length}টি ফাইল অ্যাপের ক্যাটালগ থেকে সরবে। টেলিগ্রামের মেসেজ অপরিবর্তিত থাকবে। রিকভারি স্ক্যান এগুলো সাথে সাথে আবার আমদানি করবে না।`):t(`This permanently removes ${dialog.ids.length} file(s) and their locally saved originals from this demo browser. No Telegram messages will be deleted.`,`এটি ডেমো ব্রাউজার থেকে ${dialog.ids.length}টি ফাইল ও মূল কপি স্থায়ীভাবে সরাবে। টেলিগ্রামের কোনো মেসেজ মুছবে না।`)}</p>{formError&&<p className="form-error">{formError}</p>}<div className="modal-actions"><button className="button button-light" onClick={closeDialog}>{t('Keep files','ফাইল রাখুন')}</button><button className="button danger-button" onClick={()=>removeFiles(dialog.ids)}>{t('Remove from app','অ্যাপ থেকে সরান')}</button></div></>}
-      {dialog.type==='connect'&&<ConnectPanel gateway={gateway} serverMode={serverMode} locale={locale} onConnected={async()=>{await refreshServer();closeDialog();notify(t('Telegram connected. Your drive is ready.','টেলিগ্রাম যুক্ত হয়েছে। আপনার ড্রাইভ প্রস্তুত।'));}}/>}
+      {dialog.type==='connect'&&<ConnectPanel gateway={gateway} serverMode={serverMode} locale={locale} onConnected={async()=>{
+        if(serverMode){await refreshServer();}
+        else{
+          const me=await telegramGateway.me();
+          setAccount(me);
+          const cat=await telegramGateway.loadCatalog();
+          renderCatalog(cat);
+          catalogRef.current=cat;
+          readyRef.current=true;
+          setReady(true);
+        }
+        closeDialog();
+        notify(t('Telegram connected. Your drive is ready.','টেলিগ্রাম যুক্ত হয়েছে। আপনার ড্রাইভ প্রস্তুত।'));
+      }}/>}
       {dialog.type==='settings'&&<div className="settings-content">
-        <div className="settings-profile"><div className="avatar">N</div><div><h3>{t('Personal workspace','ব্যক্তিগত ওয়ার্কস্পেস')}</h3><span>{serverMode?(account?.telegram_connected?t('Your Telegram account is connected','আপনার টেলিগ্রাম অ্যাকাউন্ট যুক্ত আছে'):t('Server storage · Connect Telegram to continue','সার্ভার স্টোরেজ · টেলিগ্রাম যুক্ত করুন')):t('Browser demo · No Telegram account linked','ব্রাউজার ডেমো · টেলিগ্রাম যুক্ত নেই')}</span></div><span className="demo-badge">{serverMode?'TELEGRAM':'DEMO'}</span></div>
-        <div className="setting-group"><h3><HardDrive size={17}/>{t('Your storage','আপনার স্টোরেজ')}</h3><div className="setting-row"><div><strong>{serverMode?t('Originals in your Telegram','আপনার টেলিগ্রামে মূল ফাইল'):t('Stored in this browser','এই ব্রাউজারে সেভ করা')}</strong><p>{activeFiles.length} {t('files','ফাইল')} · {formatBytes(totalBytes)} {t('in your catalog','ক্যাটালগে')}</p></div><button className="button button-light" onClick={()=>openDialog({type:'connect'})}><Send size={15}/>{serverMode&&account?.telegram_connected?t('Storage connection','স্টোরেজ সংযোগ'):t('Connect Telegram','টেলিগ্রাম যুক্ত করুন')}</button></div><p className="setting-hint">{serverMode?t('Only confirmed Telegram originals appear in your drive. Web uploads use temporary server staging before Telegram confirms the message.','শুধু টেলিগ্রামে নিশ্চিত হওয়া মূল ফাইল ড্রাইভে দেখা যায়। টেলিগ্রাম মেসেজ নিশ্চিত করার আগে ওয়েব আপলোড সাময়িক সার্ভার স্টোরেজ ব্যবহার করে।'):t('Demo originals stay on this device. Clearing browser data may remove them. Keep a separate copy of anything important.','ডেমোর মূল ফাইল এই ডিভাইসে থাকে। ব্রাউজার ডেটা মুছলে ফাইল মুছে যেতে পারে। গুরুত্বপূর্ণ ফাইলের আলাদা কপি রাখুন।')}</p>
+        <div className="settings-profile"><div className="avatar">N</div><div><h3>{t('Personal workspace','ব্যক্তিগত ওয়ার্কস্পেস')}</h3><span>{account?.telegram_connected?`${account.name} · ${t('Telegram connected','টেলিগ্রাম যুক্ত আছে')}`:(serverMode?t('Server storage · Connect Telegram to continue','সার্ভার স্টোরেজ · টেলিগ্রাম যুক্ত করুন'):t('Zero-cost browser mode · Connect Telegram to store files','জিরো-কস্ট ব্রাউজার মোড · টেলিগ্রাম যুক্ত করুন'))}</span></div><span className="demo-badge">{account?.telegram_connected?'TELEGRAM':serverMode?'SERVER':'LOCAL'}</span></div>
+        <div className="setting-group"><h3><HardDrive size={17}/>{t('Your storage','আপনার স্টোরেজ')}</h3><div className="setting-row"><div><strong>{account?.telegram_connected?t('Originals in your Telegram Saved Messages','টেলিগ্রাম সেভড মেসেজে মূল ফাইল'):t('Stored in this browser','এই ব্রাউজারে সেভ করা')}</strong><p>{activeFiles.length} {t('files','ফাইল')} · {formatBytes(totalBytes)} {t('in your catalog','ক্যাটালগে')}</p></div><button className="button button-light" onClick={()=>openDialog({type:'connect'})}><Send size={15}/>{account?.telegram_connected?t('Storage connection','স্টোরেজ সংযোগ'):t('Connect Telegram','টেলিগ্রাম যুক্ত করুন')}</button></div><p className="setting-hint">{account?.telegram_connected?t('Files are stored as uncompressed documents directly in your Telegram Saved Messages. Zero servers involved.','ফাইলগুলো কোনো মধ্যবর্তী সার্ভার ছাড়াই সরাসরি আপনার টেলিগ্রাম সেভড মেসেজে সংরক্ষিত হচ্ছে।'):t('Demo originals stay on this device. Connect Telegram above to save files directly to your Telegram cloud.','ডেমোর মূল ফাইল এই ডিভাইসে থাকে। টেলিগ্রামে সরাসরি সংরক্ষণ করতে উপরে টেলিগ্রাম যুক্ত করুন।')}</p>
           {serverMode&&account&&<div className="settings-button-row"><button className="button button-light" onClick={()=>refreshServer().then(()=>notify(t('Catalog refreshed.','ক্যাটালগ আপডেট হয়েছে।'))).catch(error=>notify(explainError(error)))}><Archive size={15}/>{t('Refresh catalog','ক্যাটালগ আপডেট')}</button><button className="button button-light" onClick={()=>openDialog({type:'recovery'})}><Search size={15}/>{t('Recover from Telegram','টেলিগ্রাম থেকে রিকভার')}</button></div>}
         </div>
         <div className="setting-group"><h3><Languages size={17}/>{t('Language','ভাষা')}</h3><div className="language-options"><button className={locale==='en'?'chosen':''} onClick={()=>{setLocale('en');localStorage.setItem('cloudnest-locale','en');document.documentElement.lang='en';}}>English{locale==='en'&&<Check size={16}/>}</button><button className={locale==='bn'?'chosen':''} onClick={()=>{setLocale('bn');localStorage.setItem('cloudnest-locale','bn');document.documentElement.lang='bn';}}>বাংলা{locale==='bn'&&<Check size={16}/>}</button></div></div>
         <div className="setting-group"><h3><Archive size={17}/>{t('Take your catalog with you','আপনার ক্যাটালগ সাথে রাখুন')}</h3><p className="setting-hint">{t('Export folders, filenames, tags and metadata as JSON. This does not include original file bytes. Keep this export to preserve your virtual organization.','ফোল্ডার, নাম, ট্যাগ এবং মেটাডেটা JSON হিসেবে রপ্তানি করুন। এতে মূল ফাইল থাকে না। ভার্চুয়াল ফোল্ডার ও ট্যাগ সংরক্ষণ করতে এটি রাখুন।')}</p><div className="settings-button-row"><button className="button button-light" onClick={exportCatalog}><Download size={16}/>{t('Export catalog','ক্যাটালগ রপ্তানি')}</button>{!serverMode&&<button className="button button-light" onClick={()=>importInput.current?.click()}><Upload size={16}/>{t('Import catalog','ক্যাটালগ আমদানি')}</button>}</div></div>
-        <div className="setting-group"><h3><ShieldCheck size={17}/>{t('Sessions & privacy','সেশন ও গোপনীয়তা')}</h3><p className="setting-hint">{serverMode?t('Signing out ends this device’s app session. Disconnecting the server revokes its Telegram authorization when Telegram is reachable. Neither action deletes Telegram messages.','সাইন আউট করলে এই ডিভাইসের অ্যাপ সেশন শেষ হয়। সার্ভার বিচ্ছিন্ন করলে টেলিগ্রাম অনলাইনে থাকলে এর অথরাইজেশন বাতিল হয়। কোনো কাজই টেলিগ্রামের মেসেজ মুছে দেয় না।'):t('No Telegram session is connected. There are no credentials or remote sessions to revoke in this demo.','কোনো টেলিগ্রাম সেশন যুক্ত নেই। এই ডেমোতে বাতিল করার মতো লগইন তথ্য বা রিমোট সেশন নেই।')}</p>
-          {serverMode&&account&&<div className="settings-button-row"><button className="button button-light" onClick={signOut}>{t('Sign out this device','এই ডিভাইস থেকে সাইন আউট')}</button><button className="button button-light danger-text" onClick={()=>openDialog({type:'disconnect'})}>{t('Disconnect Telegram session','টেলিগ্রাম সেশন বিচ্ছিন্ন')}</button></div>}
+        <div className="setting-group"><h3><ShieldCheck size={17}/>{t('Sessions & privacy','সেশন ও গোপনীয়তা')}</h3><p className="setting-hint">{account?.telegram_connected?t('Connected directly from this browser via WebSockets. Disconnecting removes your session from this browser.','ব্রাউজার থেকে সরাসরি টেলিগ্রাম সার্ভারে যুক্ত। ডিসকানেক্ট করলে এই ব্রাউজার থেকে সেশন মুছে যাবে।'):t('No Telegram session is connected yet. Connect your account to use Telegram cloud storage.','এখনো কোনো টেলিগ্রাম সেশন যুক্ত নেই।')}</p>
+          {account&&<div className="settings-button-row">{serverMode&&<button className="button button-light" onClick={signOut}>{t('Sign out this device','এই ডিভাইস থেকে সাইন আউট')}</button>}<button className="button button-light danger-text" onClick={()=>openDialog({type:'disconnect'})}>{t('Disconnect Telegram session','টেলিগ্রাম সেশন বিচ্ছিন্ন')}</button></div>}
           <button className="text-button" onClick={()=>openDialog({type:'security'})}>{t('How storage & sessions work','স্টোরেজ ও সেশন যেভাবে কাজ করে')}<ArrowRight size={14}/></button>
         </div>
       </div>}
@@ -455,6 +548,18 @@ export default function Drive() {
 function Empty({icon,title,text,action,onAction}: {icon:React.ReactNode;title:string;text:string;action:string;onAction:()=>void}) {return <div className="empty-state"><div className="empty-icon">{icon}</div><h3>{title}</h3><p>{text}</p><button className="button button-light" onClick={onAction}>{action}<ArrowRight size={15}/></button></div>;}
 function LocalThumbnail({file}:{file:DriveFile}) {
   const [url,setUrl]=useState('');
-  useEffect(()=>{let current='';let disposed=false;getOriginal(file.originalId||file.id).then(blob=>{if(blob&&!disposed){current=URL.createObjectURL(blob);setUrl(current);}}).catch(()=>{});return()=>{disposed=true;if(current)URL.revokeObjectURL(current);};},[file.id]);
+  useEffect(()=>{
+    let current='';let disposed=false;
+    if(file.remoteMessageId){
+      telegramGateway.downloadFile(file.remoteMessageId).then(blob=>{
+        if(blob&&!disposed){current=URL.createObjectURL(blob);setUrl(current);}
+      }).catch(()=>{});
+    }else{
+      getOriginal(file.originalId||file.id).then(blob=>{
+        if(blob&&!disposed){current=URL.createObjectURL(blob);setUrl(current);}
+      }).catch(()=>{});
+    }
+    return()=>{disposed=true;if(current)URL.revokeObjectURL(current);};
+  },[file.id,file.remoteMessageId]);
   return url&&safePreview(file)==='image'?<img src={url} alt="" loading="lazy"/>:<div className="local-image-placeholder"><FileImage size={40}/></div>;
 }

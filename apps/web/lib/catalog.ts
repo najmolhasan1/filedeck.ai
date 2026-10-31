@@ -4,6 +4,7 @@ export type DriveFile = {
   kind: FileKind; folderId: string | null; favorite: boolean; createdAt: string;
   trashedAt: string | null; asset?: string; sha256?: string; tags: string[];
   version?: number; source?: 'server' | 'browser'; availability?: string; originalId?: string;
+  remoteMessageId?: number;
 };
 export type Folder = {id: string; name: string; parentId: string | null; color: string; version?: number};
 export type Transfer = {

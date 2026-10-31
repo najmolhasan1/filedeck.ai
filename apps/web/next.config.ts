@@ -1,6 +1,28 @@
 import type { NextConfig } from 'next';
+
 const config: NextConfig = {
   poweredByHeader: false,
+  webpack: (config, { isServer }) => {
+    if (!isServer) {
+      config.resolve.fallback = {
+        ...config.resolve.fallback,
+        fs: false,
+        net: false,
+        tls: false,
+        child_process: false,
+        os: false,
+        path: false,
+      };
+    }
+    return config;
+  },
+  turbopack: {
+    resolveAlias: {
+      fs: { browser: '' },
+      net: { browser: '' },
+      tls: { browser: '' },
+    },
+  },
   async rewrites() {
     const apiUrl = process.env.API_URL || (process.env.NODE_ENV === 'development' ? 'http://127.0.0.1:4000' : undefined);
     return apiUrl ? [{ source: '/v1/:path*', destination: `${apiUrl.replace(/\/$/, '')}/v1/:path*` }] : [];
@@ -14,4 +36,5 @@ const config: NextConfig = {
     ]}];
   }
 };
+
 export default config;
