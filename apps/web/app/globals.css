@@ -909,3 +909,66 @@
   border-color: #2f6946;
   box-shadow: 0 2px 6px rgba(47, 105, 70, 0.25);
 }
+
+/* ==========================================================================
+   Welcome Banner Heading & Description Formatting
+   ========================================================================== */
+.banner-title {
+  margin: 12px 0 10px;
+  line-height: 1.25;
+}
+.banner-title-primary {
+  display: block;
+  font-size: 28px;
+  font-weight: 700;
+  color: #27402f;
+  letter-spacing: -0.6px;
+}
+.banner-title-secondary {
+  display: block;
+  font-size: 21px;
+  font-weight: 500;
+  color: #3b5842;
+  margin-top: 4px;
+  letter-spacing: -0.3px;
+}
+.banner-copy p.banner-desc {
+  font-size: 11px;
+  line-height: 1.65;
+  color: #6a7d5f;
+  max-width: 500px;
+  margin-top: 6px;
+}
+
+@media(max-width: 650px) {
+  .welcome-banner {
+    min-height: auto;
+  }
+  .banner-copy {
+    padding: 22px 18px !important;
+    max-width: 100% !important;
+  }
+  .banner-title {
+    margin: 10px 0 10px;
+  }
+  .banner-title-primary {
+    font-size: 20px;
+    font-weight: 700;
+    line-height: 1.25;
+    white-space: normal;
+  }
+  .banner-title-secondary {
+    font-size: 15.5px;
+    font-weight: 500;
+    line-height: 1.25;
+    margin-top: 3px;
+    white-space: normal;
+    color: #3f5b38;
+  }
+  .banner-copy p.banner-desc {
+    font-size: 10.5px;
+    line-height: 1.6;
+    max-width: 100% !important;
+    margin-top: 6px;
+  }
+}
