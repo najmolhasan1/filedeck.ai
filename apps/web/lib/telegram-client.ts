@@ -4,6 +4,7 @@ import { computeCheck } from 'telegram/Password.js';
 import { generateRandomBigInt } from 'telegram/Helpers.js';
 import { Catalog, DriveFile, formatBytes, kindFor, MAX_FILE_BYTES, Transfer } from './catalog';
 import { commitCatalog, loadCatalog, saveCatalog } from './storage';
+import { NativeFolderSync } from './folder-sync';
 
 export type TelegramAuthState = {
   state: 'credentials_required' | 'phone_required' | 'code_required' | 'password_required' | 'connecting' | 'ready' | 'closed' | 'unavailable';
@@ -425,6 +426,171 @@ export class TelegramBrowserGateway {
     };
 
     // Save to local catalog & sync
+    await this.addFileToCatalog(driveFile);
+
+    return { transfer, file: driveFile };
+  }
+
+  // Direct MTProto streaming upload for native Android files without loading whole file to RAM
+  public async uploadNativeStream(
+    fileInfo: { name: string; size: number; mimeType: string; uri: string },
+    signal?: AbortSignal,
+    onProgress?: (bytes: number, total: number) => void,
+    caption?: string
+  ): Promise<number> {
+    const client = await this.getClient();
+    const partSize = 512 * 1024; // 512 KB per chunk
+    const totalParts = Math.max(1, Math.ceil(fileInfo.size / partSize));
+    const isBig = fileInfo.size > 10 * 1024 * 1024;
+    const fileId = generateRandomBigInt();
+
+    for (let i = 0; i < totalParts; i++) {
+      if (signal?.aborted) throw new Error('Upload cancelled');
+      const start = i * partSize;
+      const length = Math.min(partSize, fileInfo.size - start);
+
+      const partResult = await NativeFolderSync.readFilePart({
+        uri: fileInfo.uri,
+        offset: start,
+        length,
+      });
+
+      const bytes = Buffer.from(partResult.data, 'base64');
+
+      if (isBig) {
+        await client.invoke(
+          new Api.upload.SaveBigFilePart({
+            fileId,
+            filePart: i,
+            fileTotalParts: totalParts,
+            bytes,
+          })
+        );
+      } else {
+        await client.invoke(
+          new Api.upload.SaveFilePart({
+            fileId,
+            filePart: i,
+            bytes,
+          })
+        );
+      }
+
+      onProgress?.(start + bytes.length, fileInfo.size);
+    }
+
+    const inputFile = isBig
+      ? new Api.InputFileBig({
+          id: fileId,
+          parts: totalParts,
+          name: fileInfo.name,
+        })
+      : new Api.InputFile({
+          id: fileId,
+          parts: totalParts,
+          name: fileInfo.name,
+          md5Checksum: '',
+        });
+
+    const result = await client.invoke(
+      new Api.messages.SendMedia({
+        peer: 'me',
+        media: new Api.InputMediaUploadedDocument({
+          file: inputFile,
+          mimeType: fileInfo.mimeType || 'application/octet-stream',
+          attributes: [
+            new Api.DocumentAttributeFilename({ fileName: fileInfo.name }),
+          ],
+          forceFile: true,
+        }),
+        message: caption || `filedeck.ai File: ${fileInfo.name}`,
+        randomId: generateRandomBigInt(),
+      })
+    );
+
+    let messageId = 0;
+    const raw = result as unknown as { id?: number; updates?: Array<{ id?: number; message?: { id?: number } }> };
+    if (typeof raw.id === 'number') {
+      messageId = raw.id;
+    } else if (Array.isArray(raw.updates)) {
+      for (const u of raw.updates) {
+        if (u.message && typeof u.message.id === 'number') {
+          messageId = u.message.id;
+          break;
+        } else if (typeof u.id === 'number') {
+          messageId = u.id;
+          break;
+        }
+      }
+    }
+
+    return messageId;
+  }
+
+  public async uploadNative(
+    fileInfo: { name: string; size: number; mimeType: string; uri: string },
+    options: {
+      folderId?: string | null;
+      signal?: AbortSignal;
+      onProgress?: (value: { bytes: number; expectedBytes: number; phase: 'preparing' | 'staging' | 'queued' }) => void;
+    } = {}
+  ): Promise<{ transfer: Transfer; file: DriveFile }> {
+    if (fileInfo.size > MAX_FILE_BYTES) {
+      throw new Error(`File exceeds maximum allowed size of ${formatBytes(MAX_FILE_BYTES)}`);
+    }
+
+    const transferId = crypto.randomUUID();
+    const fileId = crypto.randomUUID();
+
+    options.onProgress?.({ bytes: 0, expectedBytes: fileInfo.size, phase: 'preparing' });
+
+    let remoteMessageId = 0;
+    try {
+      options.onProgress?.({ bytes: 0, expectedBytes: fileInfo.size, phase: 'staging' });
+
+      remoteMessageId = await this.uploadNativeStream(
+        fileInfo,
+        options.signal,
+        (bytes, total) => {
+          options.onProgress?.({ bytes, expectedBytes: total, phase: 'staging' });
+        }
+      );
+    } catch (error: unknown) {
+      if (options.signal?.aborted) throw new Error('Upload cancelled');
+      throw error;
+    }
+
+    options.onProgress?.({ bytes: fileInfo.size, expectedBytes: fileInfo.size, phase: 'queued' });
+
+    const driveFile: DriveFile = {
+      id: fileId,
+      name: fileInfo.name,
+      originalName: fileInfo.name,
+      mime: fileInfo.mimeType || 'application/octet-stream',
+      bytes: fileInfo.size,
+      kind: kindFor(fileInfo.mimeType || '', fileInfo.name),
+      folderId: options.folderId || null,
+      favorite: false,
+      createdAt: new Date().toISOString(),
+      trashedAt: null,
+      tags: [],
+      source: 'server',
+      availability: 'available',
+      remoteMessageId,
+      version: 1,
+    };
+
+    const transfer: Transfer = {
+      id: transferId,
+      name: fileInfo.name,
+      bytes: fileInfo.size,
+      status: 'completed',
+      createdAt: new Date().toISOString(),
+      providerBytes: fileInfo.size,
+      stageBytes: fileInfo.size,
+      source: 'server',
+    };
+
     await this.addFileToCatalog(driveFile);
 
     return { transfer, file: driveFile };

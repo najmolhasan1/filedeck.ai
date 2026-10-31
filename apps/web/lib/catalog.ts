@@ -6,7 +6,21 @@ export type DriveFile = {
   version?: number; source?: 'server' | 'browser'; availability?: string; originalId?: string;
   remoteMessageId?: number;
 };
-export type Folder = {id: string; name: string; parentId: string | null; color: string; version?: number};
+export type FolderSyncSource = {
+  type: 'android_saf' | 'web_fs';
+  uri?: string;
+  pathName?: string;
+  lastSyncedAt?: string;
+  autoSync?: boolean;
+};
+export type Folder = {
+  id: string;
+  name: string;
+  parentId: string | null;
+  color: string;
+  version?: number;
+  syncSource?: FolderSyncSource;
+};
 export type Transfer = {
   id: string; name: string; bytes: number;
   status: 'saving' | 'queued' | 'sending' | 'verifying' | 'waiting' | 'reconciling' | 'completed' | 'failed' | 'cancelled';

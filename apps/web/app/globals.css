@@ -58,3 +58,17 @@
 .preview-loading-card p{font-size:11px;color:#849676;margin:0}
 .preview-progress-track{width:240px;max-width:85%;height:6px;background:#e1e9d7;border-radius:6px;overflow:hidden;margin:6px 0}
 .preview-progress-fill{height:100%;background:linear-gradient(90deg,#528d61,#7cb575);border-radius:6px;transition:width .2s}
+
+/* Folder Device Auto-Sync & Backup */
+.folder-sync-badge{display:inline-flex;align-items:center;gap:4px;background:#e2ecda;color:#3b5632;font-size:8px;font-weight:600;padding:2px 6px;border-radius:4px;margin-top:5px;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.folder-sync-badge svg{flex-shrink:0}
+.folder-sync-banner{display:flex;align-items:center;justify-content:space-between;background:#f0f5e8;border:1px solid #dce8d2;border-radius:9px;padding:12px 16px;margin:0 0 20px;gap:15px}
+.sync-banner-info{display:flex;align-items:center;gap:11px;color:#3e5836}
+.sync-banner-info strong{display:block;font-size:12px;font-weight:600;color:#2f4628}
+.sync-banner-info span{display:block;font-size:10px;color:#7c9170;margin-top:2px}
+.folder-sync-section{border-top:1px solid #edf0e6;margin-top:20px;padding-top:18px}
+.folder-sync-section strong{display:flex;align-items:center;gap:8px;font-size:12px;font-weight:600;color:#385233}
+.folder-sync-section p{font-size:10px;color:#7b8d70;line-height:1.7;margin:6px 0 14px}
+.folder-sync-card{background:#f3f7ed;border:1px solid #d9e5cf;border-radius:8px;padding:12px 14px;margin-bottom:12px}
+.folder-sync-card .sync-meta{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:#2e4928}
+.folder-sync-card .sync-time{font-size:9px;color:#859978;margin-top:4px}
