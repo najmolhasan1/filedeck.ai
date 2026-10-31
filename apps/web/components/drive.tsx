@@ -53,7 +53,13 @@ function Modal({children, title, onClose, wide = false}: {children: React.ReactN
 }
 
 function TypeIcon({kind,size=21}: {kind: FileKind;size?: number}) {const Icon = kind==='image'?FileImage:kind==='video'?Film:kind==='audio'?FileAudio:FileText; return <Icon size={size}/>;}
-function Brand({small=false}: {small?: boolean}) {return <div className={`brand ${small?'brand-small':''}`}><div className="brand-mark"><Cloud size={25} strokeWidth={2.2}/><span/></div><span>filedeck<span className="brand-dot">.ai</span></span></div>;}
+function Brand({small=false}: {small?: boolean}) {
+  return (
+    <div className={`brand ${small?'brand-small':''}`}>
+      <img src="/logo.png" alt="filedeck.ai" className="brand-logo-img" />
+    </div>
+  );
+}
 
 const CACHED_CATALOG_KEY='filedeck_cached_catalog';
 

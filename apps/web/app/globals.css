@@ -1282,3 +1282,31 @@
     justify-content: center;
   }
 }
+
+/* ==========================================================================
+   Brand Logo Image Styling
+   ========================================================================== */
+.brand-button {
+  padding: 0 4px;
+  align-self: flex-start;
+  background: none;
+  border: none;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+}
+.brand {
+  display: flex;
+  align-items: center;
+}
+.brand-logo-img {
+  height: 38px;
+  width: auto;
+  max-width: 185px;
+  object-fit: contain;
+  display: block;
+}
+.brand-small .brand-logo-img {
+  height: 28px;
+  max-width: 135px;
+}
