@@ -1132,11 +1132,11 @@ export default function Drive() {
     }
     if(fileInput.current)fileInput.current.value='';
   };
-  const runFolderSync = async (folder: Folder) => {
+  const runFolderSync = async (folder: Folder, forceReupload = false) => {
     if (!folder.syncSource) return;
     if (isSyncingFolder === folder.id) return;
     setIsSyncingFolder(folder.id);
-    notify(t(`Scanning "${folder.syncSource.pathName}" for new files…`, `"${folder.syncSource.pathName}" ফোল্ডারে নতুন ফাইল স্ক্যান হচ্ছে…`));
+    notify(t(`Scanning "${folder.syncSource.pathName}" for files…`, `"${folder.syncSource.pathName}" ফোল্ডারে ফাইল স্ক্যান হচ্ছে…`));
 
     try {
       const items = await listFilesInFolder(folder.syncSource, folder.id);
@@ -1166,7 +1166,7 @@ export default function Drive() {
       }
 
       const existingSignatures = new Set(
-        catalogRef.current.files
+        forceReupload ? [] : catalogRef.current.files
           .filter(f => f.folderId === folder.id && !f.trashedAt)
           .map(f => `${f.originalName}_${f.bytes}`)
       );
@@ -1578,7 +1578,7 @@ export default function Drive() {
             </button>
           </div>}
         </div>}
-        {currentFolder?.syncSource&&<div className="folder-sync-banner"><div className="sync-banner-info"><Smartphone size={18}/><div><strong>{t(`Auto-sync active: ${currentFolder.syncSource.pathName}`,`অটো-সিঙ্ক সক্রিয়: ${currentFolder.syncSource.pathName}`)}</strong><span>{currentFolder.syncSource.lastSyncedAt?t(`Last checked: ${formatDate(currentFolder.syncSource.lastSyncedAt)}`,`সর্বশেষ স্ক্যান: ${formatDate(currentFolder.syncSource.lastSyncedAt)}`):t('Ready to sync','সিঙ্কের জন্য প্রস্তুত')}</span></div></div><button className="button button-light" onClick={()=>runFolderSync(currentFolder)} disabled={isSyncingFolder===currentFolder.id}><RefreshCw size={13} className={isSyncingFolder===currentFolder.id?'spin':''}/>{t('Sync now','এখনই সিঙ্ক')}</button></div>}
+        {currentFolder?.syncSource&&<div className="folder-sync-banner"><div className="sync-banner-info"><Smartphone size={18}/><div><strong>{t(`Auto-sync active: ${currentFolder.syncSource.pathName}`,`অটো-সিঙ্ক সক্রিয়: ${currentFolder.syncSource.pathName}`)}</strong><span>{currentFolder.syncSource.lastSyncedAt?t(`Last checked: ${formatDate(currentFolder.syncSource.lastSyncedAt)}`,`সর্বশেষ স্ক্যান: ${formatDate(currentFolder.syncSource.lastSyncedAt)}`):t('Ready to sync','সিঙ্কের জন্য প্রস্তুত')}</span></div></div><div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}><button className="button button-light" onClick={()=>runFolderSync(currentFolder)} disabled={isSyncingFolder===currentFolder.id}><RefreshCw size={13} className={isSyncingFolder===currentFolder.id?'spin':''}/>{t('Sync new','নতুন ফাইল সিঙ্ক')}</button><button className="button button-light" onClick={()=>runFolderSync(currentFolder, true)} disabled={isSyncingFolder===currentFolder.id} title={t('Re-read and upload full uncorrupted files','সম্পূর্ণ নিখুঁতভাবে সব ফাইল আবার আপলোড করুন')}><RefreshCw size={13}/>{t('Full re-sync','সম্পূর্ণ রি-সিঙ্ক')}</button></div></div>}
         {((['all','photos','videos','documents','audio'].includes(view)) && (displayedFolders.length>0 || (view==='all' && !search && !folderId))) && (
           <section className="folders-section">
             <div className="section-heading">

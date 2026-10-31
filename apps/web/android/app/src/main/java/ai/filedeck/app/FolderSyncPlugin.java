@@ -6,6 +6,7 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Build;
+import android.os.ParcelFileDescriptor;
 import android.util.Base64;
 import android.util.Size;
 import androidx.activity.result.ActivityResult;
@@ -18,7 +19,10 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.ActivityCallback;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import java.io.ByteArrayOutputStream;
+import java.io.FileInputStream;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.FileChannel;
 
 @CapacitorPlugin(name = "FolderSync")
 public class FolderSyncPlugin extends Plugin {
@@ -117,6 +121,46 @@ public class FolderSyncPlugin extends Plugin {
             return;
         }
 
+        ParcelFileDescriptor pfd = null;
+        FileInputStream fis = null;
+        try {
+            Uri fileUri = Uri.parse(uriStr);
+            pfd = getContext().getContentResolver().openFileDescriptor(fileUri, "r");
+            if (pfd != null) {
+                fis = new FileInputStream(pfd.getFileDescriptor());
+                FileChannel channel = fis.getChannel();
+                channel.position(offset);
+
+                ByteBuffer buffer = ByteBuffer.allocate(length);
+                int totalRead = 0;
+                while (totalRead < length) {
+                    int r = channel.read(buffer);
+                    if (r <= 0) break;
+                    totalRead += r;
+                }
+
+                byte[] bytes = new byte[totalRead];
+                buffer.flip();
+                buffer.get(bytes);
+
+                String base64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
+                JSObject ret = new JSObject();
+                ret.put("data", base64);
+                ret.put("bytesRead", totalRead);
+                call.resolve(ret);
+                return;
+            }
+        } catch (Exception ignored) {
+        } finally {
+            if (fis != null) {
+                try { fis.close(); } catch (Exception ignored) {}
+            }
+            if (pfd != null) {
+                try { pfd.close(); } catch (Exception ignored) {}
+            }
+        }
+
+        // Fallback: Read stream with byte-draining loop (never breaks early on skip == 0!)
         try {
             Uri fileUri = Uri.parse(uriStr);
             InputStream is = getContext().getContentResolver().openInputStream(fileUri);
@@ -125,18 +169,24 @@ public class FolderSyncPlugin extends Plugin {
                 return;
             }
 
-            long skipped = 0;
-            while (skipped < offset) {
-                long s = is.skip(offset - skipped);
-                if (s <= 0) break;
-                skipped += s;
+            long toSkip = offset;
+            byte[] discard = new byte[16384];
+            while (toSkip > 0) {
+                long s = is.skip(toSkip);
+                if (s > 0) {
+                    toSkip -= s;
+                } else {
+                    int read = is.read(discard, 0, (int) Math.min(discard.length, toSkip));
+                    if (read <= 0) break;
+                    toSkip -= read;
+                }
             }
 
             byte[] buffer = new byte[length];
             int totalRead = 0;
             while (totalRead < length) {
                 int r = is.read(buffer, totalRead, length - totalRead);
-                if (r == -1) break;
+                if (r <= 0) break;
                 totalRead += r;
             }
             is.close();
@@ -152,8 +202,8 @@ public class FolderSyncPlugin extends Plugin {
             ret.put("data", base64);
             ret.put("bytesRead", totalRead);
             call.resolve(ret);
-        } catch (Exception e) {
-            call.reject("Error reading file part: " + e.getMessage());
+        } catch (Exception ex) {
+            call.reject("Error reading file part: " + ex.getMessage());
         }
     }
 
@@ -170,14 +220,14 @@ public class FolderSyncPlugin extends Plugin {
             Bitmap bitmap = null;
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 try {
-                    bitmap = getContext().getContentResolver().loadThumbnail(fileUri, new Size(320, 320), null);
+                    bitmap = getContext().getContentResolver().loadThumbnail(fileUri, new Size(640, 640), null);
                 } catch (Exception ignored) {}
             }
             if (bitmap == null) {
                 InputStream is = getContext().getContentResolver().openInputStream(fileUri);
                 if (is != null) {
                     BitmapFactory.Options opts = new BitmapFactory.Options();
-                    opts.inSampleSize = 4;
+                    opts.inSampleSize = 2;
                     bitmap = BitmapFactory.decodeStream(is, null, opts);
                     is.close();
                 }
@@ -185,7 +235,7 @@ public class FolderSyncPlugin extends Plugin {
 
             if (bitmap != null) {
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                bitmap.compress(Bitmap.CompressFormat.JPEG, 80, baos);
+                bitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos);
                 byte[] bytes = baos.toByteArray();
                 String base64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
                 JSObject ret = new JSObject();
