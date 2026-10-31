@@ -72,3 +72,12 @@
 .folder-sync-card{background:#f3f7ed;border:1px solid #d9e5cf;border-radius:8px;padding:12px 14px;margin-bottom:12px}
 .folder-sync-card .sync-meta{display:flex;align-items:center;gap:7px;font-size:12px;font-weight:600;color:#2e4928}
 .folder-sync-card .sync-time{font-size:9px;color:#859978;margin-top:4px}
+
+/* Relocated Workspace & Upload Actions */
+.sidebar-bottom .workspace-label{margin:16px 2px 14px;padding:9px 10px;border-radius:9px;cursor:pointer;background:#edf3e5;border:1px solid #dfe9d5;transition:background .15s,border-color .15s}
+.sidebar-bottom .workspace-label:hover{background:#e5edd9;border-color:#d3e1c6}
+.upload-heading-button{display:inline-flex;align-items:center;gap:7px;font-size:10px;font-weight:600;padding:9px 14px;border-radius:7px}
+@media(max-width:650px){
+  .upload-heading-button{padding:9px 10px;min-height:36px}
+  .upload-heading-button span{display:none}
+}
