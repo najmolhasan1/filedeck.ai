@@ -2,7 +2,7 @@
   "name": "@cloudnest/web",
   "version": "0.1.0",
   "private": true,
-  "engines": { "node": "24.x" },
+  "engines": { "node": ">=22" },
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0",
     "build": "next build",
