@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Cloud, CloudUpload, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Plus, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, Star, Tag, Trash2, Upload, Wifi, X } from 'lucide-react';
 import { canMoveFolder, Catalog, DriveFile, FileKind, Folder, Transfer, formatBytes, initialCatalog, kindFor, MAX_FILE_BYTES, safePreview } from '@/lib/catalog';
-import { commitCatalog, getOriginal, loadCatalog } from '@/lib/storage';
+import { commitCatalog, getOriginal, loadCatalog, saveOriginal } from '@/lib/storage';
 import { APIError, ServerGateway, type ServerUser, type UploadDescriptor } from '@/lib/server';
 import { telegramGateway, type TelegramUser } from '@/lib/telegram-client';
 import ConnectPanel from './connect-panel';
 import { parseCatalogImport } from '@/lib/catalog-import';
+
+const thumbnailCache = new Map<string, string>();
 
 type View = 'all' | 'photos' | 'videos' | 'documents' | 'audio' | 'favorites' | 'recent' | 'trash' | 'transfers';
 type Dialog = {type: 'new-folder'} | {type: 'rename'; file: DriveFile} | {type: 'move'; ids: string[]} | {type: 'settings' | 'connect' | 'help' | 'security' | 'disconnect' | 'recovery'} | {type: 'remove'; ids: string[]} | {type: 'folder'; folder: Folder};
@@ -198,6 +200,17 @@ export default function Drive() {
     if(!preview)return;let disposed=false;let localUrl:string|undefined;
     setPreviewUrl(null);setPreviewError('');
     (async()=>{
+      if (thumbnailCache.has(preview.id)) {
+        if (!disposed) setPreviewUrl(thumbnailCache.get(preview.id)!);
+        return;
+      }
+      const cached = await getOriginal(preview.originalId || preview.id);
+      if (cached && !disposed) {
+        localUrl = URL.createObjectURL(cached);
+        thumbnailCache.set(preview.id, localUrl);
+        setPreviewUrl(localUrl);
+        return;
+      }
       if (preview.remoteMessageId) {
         if (!safePreview(preview)) {
           if (!disposed) setPreviewUrl('unsupported');
@@ -205,12 +218,14 @@ export default function Drive() {
         }
         const blob = await telegramGateway.downloadFile(preview.remoteMessageId);
         if (!disposed) {
+          void saveOriginal(preview.id, blob);
           localUrl = URL.createObjectURL(blob);
+          thumbnailCache.set(preview.id, localUrl);
           setPreviewUrl(localUrl);
         }
         return;
       }
-      if(preview.source==='server'){
+      if(serverMode&&preview.source==='server'){
         if(['video','audio'].includes(safePreview(preview)||'')){if(!disposed)setPreviewUrl(gateway.contentUrl(preview.id));return;}
         if(!safePreview(preview)){if(!disposed)setPreviewUrl('unsupported');return;}
         if(preview.bytes>32*1024*1024)throw new Error('This original is too large for a bounded browser preview. Download it to open locally.');
@@ -222,8 +237,8 @@ export default function Drive() {
       const blob=await getOriginal(preview.originalId||preview.id);if(!blob)throw new Error('The original is no longer in this browser.');
       localUrl=URL.createObjectURL(blob);if(!disposed)setPreviewUrl(localUrl);
     })().catch(error=>{if(!disposed)setPreviewError(error.message);});
-    return()=>{disposed=true;if(localUrl)URL.revokeObjectURL(localUrl);};
-  },[preview,gateway]);
+    return()=>{disposed=true;};
+  },[preview,gateway,serverMode]);
   const openDialog=(value:Dialog)=>{
     if(!readyRef.current&&['new-folder','rename','move','folder','remove'].includes(value.type)){
       if(serverMode){setDialog({type:'connect'});setFormError('');}return;
@@ -292,6 +307,13 @@ export default function Drive() {
             const updated={...catalogRef.current,transfers:catalogRef.current.transfers.map(item=>item.id===id?updatedTransfer:item)};
             catalogRef.current=updated;renderCatalog(updated);
           }});
+          if(file.type.startsWith('image/')){
+            try {
+              const localUrl = URL.createObjectURL(file);
+              thumbnailCache.set(result.file.id, localUrl);
+            } catch {}
+          }
+          void saveOriginal(result.file.id, file);
           const updatedCatalog={...catalogRef.current,files:[result.file,...catalogRef.current.files.filter(f=>f.id!==result.file.id)],transfers:catalogRef.current.transfers.map(item=>item.id===id?{...item,status:'completed' as const}:item)};
           catalogRef.current=updatedCatalog;renderCatalog(updatedCatalog);
           notify(t(`“${file.name}” uploaded to your Telegram Saved Messages.`,`“${file.name}” আপনার টেলিগ্রাম সেভড মেসেজে আপলোড হয়েছে।`));
@@ -413,6 +435,7 @@ export default function Drive() {
   };
   const removeFiles=async(ids:string[])=>{
     try{
+      for(const id of ids) thumbnailCache.delete(id);
       if(serverMode)await runServer(async()=>{for(const id of ids)await gateway.remove(id);});
       else {
         const remaining=catalogRef.current.files.filter(file=>!ids.includes(file.id));
@@ -499,7 +522,7 @@ export default function Drive() {
         {filters&&<div className="filter-panel"><label>{t('File type','ফাইলের ধরন')}<select value={kind} onChange={event=>setKind(event.target.value)}><option value="all">{t('All types','সব ধরনের')}</option><option value="image">{t('Images','ছবি')}</option><option value="document">{t('Documents','ডকুমেন্ট')}</option><option value="video">{t('Videos','ভিডিও')}</option><option value="audio">{t('Audio','অডিও')}</option></select></label><label>{t('Date added','যোগ করার তারিখ')}<select value={dateFilter} onChange={event=>setDateFilter(event.target.value)}><option value="all">{t('Any time','যেকোনো সময়')}</option><option value="7">{t('Last 7 days','গত ৭ দিন')}</option><option value="30">{t('Last 30 days','গত ৩০ দিন')}</option></select></label><button className="text-button" onClick={()=>{setKind('all');setDateFilter('all');}}>{t('Reset filters','ফিল্টার রিসেট')}</button></div>}
         {view==='trash'&&<div className="local-notice"><Info size={17}/>{t('Trash is reversible. The 30-day reminder does not automatically delete anything from Telegram.','ট্র্যাশ থেকে ফিরিয়ে আনা যায়। ৩০ দিনের স্মারক টেলিগ্রাম থেকে কিছু মুছে দেয় না।')}</div>}
         {selected.size>0&&<div className="selection-bar"><button className="icon-button" aria-label="Clear selection" onClick={()=>setSelected(new Set())}><X size={16}/></button><strong>{selected.size} {t('selected','নির্বাচিত')}</strong><button onClick={()=>setSelected(new Set(visible.map(file=>file.id)))}>{t('Select all','সব নির্বাচন')}</button><div/>{view==='trash'?<><button onClick={()=>restore([...selected])}><Archive size={15}/>{t('Restore','ফিরিয়ে আনুন')}</button><button onClick={()=>openDialog({type:'remove',ids:[...selected]})}><Trash2 size={15}/>{t('Remove','সরান')}</button></>:<><button onClick={()=>openDialog({type:'move',ids:[...selected]})}><FolderOpen size={15}/>{t('Move','সরান')}</button><button onClick={()=>{[...selected].forEach(id=>{const file=catalog.files.find(f=>f.id===id);if(file)download(file);});}}><Download size={15}/>{t('Download','ডাউনলোড')}</button><button onClick={()=>trash([...selected])}><Trash2 size={15}/>{t('Trash','ট্র্যাশ')}</button></>}</div>}
-        {visible.length>0?<div className={layout==='grid'?'file-grid':'file-list'}>{layout==='list'&&<div className="list-header"><span>{t('Name','নাম')}</span><span>{t('File size','আকার')}</span><span>{t('Date added','তারিখ')}</span><span/></div>}{visible.map(file=><article key={file.id} className={`file-card ${selected.has(file.id)?'file-selected':''}`}><div className={`file-thumbnail file-${file.kind}`}><button className="thumbnail-open" aria-label={`Preview ${file.name}`} onClick={()=>{setPreview(file);setTagValue('');}}>{file.kind==='image'&&safePreview(file)&&file.source==='server'?<img src={gateway.previewUrl(file.id)} alt="" loading="lazy"/>:file.kind==='image'&&safePreview(file)&&file.asset?<img src={file.asset} alt="" loading="lazy"/>:file.kind==='image'&&!file.asset?<LocalThumbnail file={file}/>:!file.asset?<div className="uploaded-placeholder"><TypeIcon kind={file.kind} size={40}/><span>{file.name.split('.').pop()?.toUpperCase()}</span></div>:<div className={`document-preview ${file.mime==='application/pdf'?'pdf-preview':file.name.endsWith('.csv')?'sheet-preview':''}`}><div className="paper"><span className="paper-eyebrow">{file.mime==='application/pdf'?'CLOUDNEST STUDIO':file.name.endsWith('.csv')?'PERSONAL FINANCE':'A LITTLE SPACE TO THINK'}</span><strong>{file.mime==='application/pdf'?'Good things\nstart with a plan.':file.name.endsWith('.csv')?'October\nat a glance.':file.name.endsWith('.md')?'The little\nthings matter.':'Make yourself\nat home.'}</strong><span className="paper-rule"/><span className="paper-line"/><span className="paper-line short"/><span className="paper-stamp">{file.mime==='application/pdf'?'PROJECT BRIEF / 2026':file.name.endsWith('.csv')?'BUDGET & EVERYDAY':'NOTES & EVERYDAY'}</span></div><span className="document-type">{file.name.split('.').pop()?.toUpperCase()}</span></div>}</button><input type="checkbox" className="file-check" checked={selected.has(file.id)} onChange={()=>toggleSelected(file.id)} aria-label={`Select ${file.name}`}/>{file.favorite&&<span className="thumbnail-favorite"><Star size={12} fill="currentColor"/></span>}{file.kind==='video'&&<span className="play-badge"><Film size={22}/></span>}</div><div className="file-card-details">{layout==='list'&&<input type="checkbox" className="list-file-check" checked={selected.has(file.id)} onChange={()=>toggleSelected(file.id)} aria-label={`Select ${file.name}`}/>}<div className={`file-type-icon ${file.kind}`}><TypeIcon kind={file.kind} size={17}/></div><button className="file-name" title={file.name} onClick={()=>{setPreview(file);setTagValue('');}}><strong>{file.name}</strong><span>{formatBytes(file.bytes)}<span>·</span>{formatDate(file.createdAt)}</span></button><span className="list-size">{formatBytes(file.bytes)}</span><span className="list-date">{formatDate(file.createdAt)}</span><div className="file-menu-wrap"><button className={`icon-button file-menu-button ${menu===file.id?'menu-active':''}`} aria-label={`Actions for ${file.name}`} aria-expanded={menu===file.id} onClick={()=>setMenu(menu===file.id?null:file.id)}><Ellipsis size={19}/></button>{menu===file.id&&<><div className="menu-dismiss" onClick={()=>setMenu(null)}/><div className="file-menu" role="menu">{file.trashedAt?<><button role="menuitem" onClick={()=>restore([file.id])}><Archive size={15}/>{t('Restore to drive','ড্রাইভে ফিরিয়ে আনুন')}</button><button role="menuitem" className="danger-text" onClick={()=>openDialog({type:'remove',ids:[file.id]})}><Trash2 size={15}/>{t('Remove from app','অ্যাপ থেকে সরান')}</button></>:<><button role="menuitem" onClick={()=>{setPreview(file);setMenu(null);}}><File size={15}/>{t('Preview & details','প্রিভিউ ও বিস্তারিত')}</button><button role="menuitem" onClick={()=>download(file)}><Download size={15}/>{t('Download original','মূল ফাইল ডাউনলোড')}</button><button role="menuitem" onClick={()=>favorite(file)}><Star size={15}/>{file.favorite?t('Remove favorite','পছন্দ থেকে সরান'):t('Add to favorites','পছন্দে যোগ করুন')}</button><div className="menu-line"/><button role="menuitem" onClick={()=>openDialog({type:'rename',file})}><FileText size={15}/>{t('Rename','নাম পরিবর্তন')}</button><button role="menuitem" onClick={()=>openDialog({type:'move',ids:[file.id]})}><FolderOpen size={15}/>{t('Move to folder','ফোল্ডারে সরান')}</button><button role="menuitem" className="danger-text" onClick={()=>trash([file.id])}><Trash2 size={15}/>{t('Move to trash','ট্র্যাশে সরান')}</button></>}</div></>}</div></div></article>)}</div>:<Empty icon={view==='favorites'?<Star size={30}/>:view==='trash'?<Trash2 size={30}/>:search?<Search size={30}/>:<FolderOpen size={30}/>} title={search?t('No files found','কোনো ফাইল পাওয়া যায়নি'):view==='favorites'?t('A place for your favorites','পছন্দের ফাইলের জায়গা'):view==='trash'?t('Nothing left behind','ট্র্যাশ খালি'):t('A fresh little space','নতুন একটি জায়গা')} text={search?t('Try another filename, tag, or a different filter.','অন্য নাম, ট্যাগ বা ফিল্টার দিয়ে খুঁজুন।'):view==='favorites'?t('Give a file a star and you’ll find it here.','ফাইলে তারকা দিন, এখানে খুঁজে পাবেন।'):view==='trash'?t('Files you move to trash will appear here.','ট্র্যাশে সরানো ফাইল এখানে দেখা যাবে।'):t('Drop something here, or upload your first file.','এখানে ফাইল ছেড়ে দিন, অথবা প্রথম ফাইল আপলোড করুন।')} action={search?t('Clear search & filters','অনুসন্ধান ও ফিল্টার মুছুন'):view==='trash'||view==='favorites'?t('Back to My drive','আমার ড্রাইভে ফিরুন'):t('Upload files','ফাইল আপলোড')} onAction={()=>{if(search){setSearch('');setKind('all');setDateFilter('all');}else if(view==='trash'||view==='favorites')navigate('all');else fileInput.current?.click();}}/>}
+        {visible.length>0?<div className={layout==='grid'?'file-grid':'file-list'}>{layout==='list'&&<div className="list-header"><span>{t('Name','নাম')}</span><span>{t('File size','আকার')}</span><span>{t('Date added','তারিখ')}</span><span/></div>}{visible.map(file=><article key={file.id} className={`file-card ${selected.has(file.id)?'file-selected':''}`}><div className={`file-thumbnail file-${file.kind}`}><button className="thumbnail-open" aria-label={`Preview ${file.name}`} onClick={()=>{setPreview(file);setTagValue('');}}>{file.kind==='image'&&safePreview(file)?(file.remoteMessageId?<LocalThumbnail file={file}/>:serverMode&&file.source==='server'?<img src={gateway.previewUrl(file.id)} alt="" loading="lazy"/>:file.asset?<img src={file.asset} alt="" loading="lazy"/>:<LocalThumbnail file={file}/>):!file.asset?<div className="uploaded-placeholder"><TypeIcon kind={file.kind} size={40}/><span>{file.name.split('.').pop()?.toUpperCase()}</span></div>:<div className={`document-preview ${file.mime==='application/pdf'?'pdf-preview':file.name.endsWith('.csv')?'sheet-preview':''}`}><div className="paper"><span className="paper-eyebrow">{file.mime==='application/pdf'?'CLOUDNEST STUDIO':file.name.endsWith('.csv')?'PERSONAL FINANCE':'A LITTLE SPACE TO THINK'}</span><strong>{file.mime==='application/pdf'?'Good things\nstart with a plan.':file.name.endsWith('.csv')?'October\nat a glance.':file.name.endsWith('.md')?'The little\nthings matter.':'Make yourself\nat home.'}</strong><span className="paper-rule"/><span className="paper-line"/><span className="paper-line short"/><span className="paper-stamp">{file.mime==='application/pdf'?'PROJECT BRIEF / 2026':file.name.endsWith('.csv')?'BUDGET & EVERYDAY':'NOTES & EVERYDAY'}</span></div><span className="document-type">{file.name.split('.').pop()?.toUpperCase()}</span></div>}</button><input type="checkbox" className="file-check" checked={selected.has(file.id)} onChange={()=>toggleSelected(file.id)} aria-label={`Select ${file.name}`}/>{file.favorite&&<span className="thumbnail-favorite"><Star size={12} fill="currentColor"/></span>}{file.kind==='video'&&<span className="play-badge"><Film size={22}/></span>}</div><div className="file-card-details">{layout==='list'&&<input type="checkbox" className="list-file-check" checked={selected.has(file.id)} onChange={()=>toggleSelected(file.id)} aria-label={`Select ${file.name}`}/>}<div className={`file-type-icon ${file.kind}`}><TypeIcon kind={file.kind} size={17}/></div><button className="file-name" title={file.name} onClick={()=>{setPreview(file);setTagValue('');}}><strong>{file.name}</strong><span>{formatBytes(file.bytes)}<span>·</span>{formatDate(file.createdAt)}</span></button><span className="list-size">{formatBytes(file.bytes)}</span><span className="list-date">{formatDate(file.createdAt)}</span><div className="file-menu-wrap"><button className={`icon-button file-menu-button ${menu===file.id?'menu-active':''}`} aria-label={`Actions for ${file.name}`} aria-expanded={menu===file.id} onClick={()=>setMenu(menu===file.id?null:file.id)}><Ellipsis size={19}/></button>{menu===file.id&&<><div className="menu-dismiss" onClick={()=>setMenu(null)}/><div className="file-menu" role="menu">{file.trashedAt?<><button role="menuitem" onClick={()=>restore([file.id])}><Archive size={15}/>{t('Restore to drive','ড্রাইভে ফিরিয়ে আনুন')}</button><button role="menuitem" className="danger-text" onClick={()=>openDialog({type:'remove',ids:[file.id]})}><Trash2 size={15}/>{t('Remove from app','অ্যাপ থেকে সরান')}</button></>:<><button role="menuitem" onClick={()=>{setPreview(file);setMenu(null);}}><File size={15}/>{t('Preview & details','প্রিভিউ ও বিস্তারিত')}</button><button role="menuitem" onClick={()=>download(file)}><Download size={15}/>{t('Download original','মূল ফাইল ডাউনলোড')}</button><button role="menuitem" onClick={()=>favorite(file)}><Star size={15}/>{file.favorite?t('Remove favorite','পছন্দ থেকে সরান'):t('Add to favorites','পছন্দে যোগ করুন')}</button><div className="menu-line"/><button role="menuitem" onClick={()=>openDialog({type:'rename',file})}><FileText size={15}/>{t('Rename','নাম পরিবর্তন')}</button><button role="menuitem" onClick={()=>openDialog({type:'move',ids:[file.id]})}><FolderOpen size={15}/>{t('Move to folder','ফোল্ডারে সরান')}</button><button role="menuitem" className="danger-text" onClick={()=>trash([file.id])}><Trash2 size={15}/>{t('Move to trash','ট্র্যাশে সরান')}</button></>}</div></>}</div></div></article>)}</div>:<Empty icon={view==='favorites'?<Star size={30}/>:view==='trash'?<Trash2 size={30}/>:search?<Search size={30}/>:<FolderOpen size={30}/>} title={search?t('No files found','কোনো ফাইল পাওয়া যায়নি'):view==='favorites'?t('A place for your favorites','পছন্দের ফাইলের জায়গা'):view==='trash'?t('Nothing left behind','ট্র্যাশ খালি'):t('A fresh little space','নতুন একটি জায়গা')} text={search?t('Try another filename, tag, or a different filter.','অন্য নাম, ট্যাগ বা ফিল্টার দিয়ে খুঁজুন।'):view==='favorites'?t('Give a file a star and you’ll find it here.','ফাইলে তারকা দিন, এখানে খুঁজে পাবেন।'):view==='trash'?t('Files you move to trash will appear here.','ট্র্যাশে সরানো ফাইল এখানে দেখা যাবে।'):t('Drop something here, or upload your first file.','এখানে ফাইল ছেড়ে দিন, অথবা প্রথম ফাইল আপলোড করুন।')} action={search?t('Clear search & filters','অনুসন্ধান ও ফিল্টার মুছুন'):view==='trash'||view==='favorites'?t('Back to My drive','আমার ড্রাইভে ফিরুন'):t('Upload files','ফাইল আপলোড')} onAction={()=>{if(search){setSearch('');setKind('all');setDateFilter('all');}else if(view==='trash'||view==='favorites')navigate('all');else fileInput.current?.click();}}/>}
         <div className="files-footer"><span>{visible.length} {t('files','ফাইল')}<span className="footer-dot">·</span>{formatBytes(visible.reduce((sum,file)=>sum+file.bytes,0))}</span><span><ShieldCheck size={13}/>{t('Originals stay original. Always.','মূল ফাইল সবসময় মূল ফাইলই থাকে।')}</span></div></section>}
         <footer className="workspace-footer"><span><span className="footer-green-dot"/>{t('A little more space. A little more peace of mind.','একটু বেশি জায়গা। একটু বেশি স্বস্তি।')}</span><button onClick={()=>openDialog({type:'security'})}>{t('How your files are stored','ফাইল যেভাবে রাখা হয়')}<ArrowRight size={13}/></button></footer>
       </main>
@@ -547,19 +570,37 @@ export default function Drive() {
 
 function Empty({icon,title,text,action,onAction}: {icon:React.ReactNode;title:string;text:string;action:string;onAction:()=>void}) {return <div className="empty-state"><div className="empty-icon">{icon}</div><h3>{title}</h3><p>{text}</p><button className="button button-light" onClick={onAction}>{action}<ArrowRight size={15}/></button></div>;}
 function LocalThumbnail({file}:{file:DriveFile}) {
-  const [url,setUrl]=useState('');
+  const [url,setUrl]=useState(()=>thumbnailCache.get(file.id)||'');
   useEffect(()=>{
-    let current='';let disposed=false;
-    if(file.remoteMessageId){
-      telegramGateway.downloadFile(file.remoteMessageId).then(blob=>{
-        if(blob&&!disposed){current=URL.createObjectURL(blob);setUrl(current);}
-      }).catch(()=>{});
-    }else{
-      getOriginal(file.originalId||file.id).then(blob=>{
-        if(blob&&!disposed){current=URL.createObjectURL(blob);setUrl(current);}
-      }).catch(()=>{});
+    let disposed=false;
+    if(thumbnailCache.has(file.id)){
+      setUrl(thumbnailCache.get(file.id)!);
+      return;
     }
-    return()=>{disposed=true;if(current)URL.revokeObjectURL(current);};
-  },[file.id,file.remoteMessageId]);
-  return url&&safePreview(file)==='image'?<img src={url} alt="" loading="lazy"/>:<div className="local-image-placeholder"><FileImage size={40}/></div>;
+    (async()=>{
+      try {
+        const cached = await getOriginal(file.originalId || file.id);
+        if(cached && !disposed){
+          const localUrl = URL.createObjectURL(cached);
+          thumbnailCache.set(file.id, localUrl);
+          setUrl(localUrl);
+          return;
+        }
+        if(file.remoteMessageId){
+          const blob = await telegramGateway.downloadFile(file.remoteMessageId);
+          if(blob && !disposed){
+            void saveOriginal(file.id, blob);
+            const localUrl = URL.createObjectURL(blob);
+            thumbnailCache.set(file.id, localUrl);
+            setUrl(localUrl);
+          }
+        }
+      } catch (e) {
+        console.warn('Could not load thumbnail for', file.name, e);
+      }
+    })();
+    return()=>{disposed=true;};
+  },[file.id,file.originalId,file.remoteMessageId,file.name]);
+
+  return url&&safePreview(file)==='image'?<img src={url} alt="" loading="lazy" onError={()=>setUrl('')}/>:<div className="local-image-placeholder"><FileImage size={40}/></div>;
 }
