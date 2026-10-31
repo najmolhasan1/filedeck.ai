@@ -5,7 +5,7 @@ const date=(value:unknown):string=>{if(typeof value!=='string'||!Number.isFinite
 /** Organization only: imported metadata cannot prove that any original exists. */
 export function parseCatalogImport(input:unknown,current:Catalog):Catalog {
  const raw=object(input);
- if(raw.schemaVersion!==1||!Array.isArray(raw.files)||!Array.isArray(raw.folders))throw new Error('Choose a CloudNest schema version 1 catalog export.');
+ if(raw.schemaVersion!==1||!Array.isArray(raw.files)||!Array.isArray(raw.folders))throw new Error('Choose a valid schema version 1 catalog export.');
  if(raw.files.length>10000||raw.folders.length>1000)throw new Error('This catalog is too large for browser demo import.');
  const folderIds=new Set<string>();
  const folders:Folder[]=raw.folders.map((value,index)=>{const folder=object(value),id=text(folder.id,'folder ID',128);if(folderIds.has(id))throw new Error('The catalog contains duplicate folder IDs.');folderIds.add(id);return {id,name:text(folder.name,'folder name'),parentId:folder.parentId===null?null:text(folder.parentId,'parent ID',128),color:['green','blue','peach','purple'][index%4]};});

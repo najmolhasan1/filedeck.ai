@@ -65,6 +65,6 @@ export function initialCatalog(): Catalog {
     sample('forest','Into the green.jpg','image/jpeg',152539,'memories','/images/forest.jpg',true),
     sample('notes','Little things to remember.md','text/markdown',265,'personal','/samples/notes.md'),
     sample('budget','October budget.csv','text/csv',125,'documents','/samples/budget.csv'),
-    sample('welcome','Welcome to CloudNest.txt','text/plain',511,null,'/samples/welcome.txt')
+    sample('welcome','Welcome to filedeck.ai.txt','text/plain',511,null,'/samples/welcome.txt')
   ], transfers: []};
 }

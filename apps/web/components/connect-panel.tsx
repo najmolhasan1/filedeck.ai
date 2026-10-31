@@ -120,7 +120,7 @@ export default function ConnectPanel({gateway,serverMode,locale,onConnected}: {
 
   return <div>
     <div className="connect-illustration"><Send size={32}/><span>+</span><Cloud size={36}/></div>
-    <p className="modal-description">{t('CloudNest is an independent third-party Telegram client. Connect your own account to organize original files in a storage chat you select.','CloudNest একটি স্বতন্ত্র তৃতীয় পক্ষের টেলিগ্রাম ক্লায়েন্ট। নিজের অ্যাকাউন্টের নির্বাচিত স্টোরেজ চ্যাটে মূল ফাইল গুছিয়ে রাখুন।')}</p>
+    <p className="modal-description">{t('filedeck.ai is an independent third-party Telegram client. Connect your own account to organize original files in a storage chat you select.','filedeck.ai একটি স্বতন্ত্র তৃতীয় পক্ষের টেলিগ্রাম ক্লায়েন্ট। নিজের অ্যাকাউন্টের নির্বাচিত স্টোরেজ চ্যাটে মূল ফাইল গুছিয়ে রাখুন।')}</p>
     <div className="disclosure"><ShieldCheck size={21}/><div><strong>{t('Zero-Cost & Pure Client Privacy','জিরো-কস্ট ও গোপনীয়তা')}</strong><p>{t('Browser mode connects directly from your device to Telegram via WebSockets. Your files and session keys never touch any intermediary server.','ব্রাউজার মোড আপনার ডিভাইস থেকে সরাসরি টেলিগ্রাম সার্ভারে যুক্ত হয়। আপনার ফাইল ও সেশন কোনো মধ্যবর্তী সার্ভারে যায় না।')}</p></div></div>
 
     {phase==='credentials_required' || configuringCreds ? (
@@ -144,7 +144,7 @@ export default function ConnectPanel({gateway,serverMode,locale,onConnected}: {
     ) : phase==='ready' ? (
       <div className="storage-selection">
         <div className="local-notice"><Check size={17}/>{t('Telegram connected. Choose where your originals should go.','টেলিগ্রাম যুক্ত হয়েছে। মূল ফাইল কোথায় রাখবেন বেছে নিন।')}</div>
-        <div className="storage-choice"><Archive size={24}/><div><strong>{t('Saved Messages','Saved Messages')}</strong><p>{t('A private chat with yourself. Virtual folders stay in your CloudNest catalog; they do not create Telegram groups.','নিজের সাথে ব্যক্তিগত চ্যাট। ভার্চুয়াল ফোল্ডার CloudNest ক্যাটালগে থাকে, নতুন টেলিগ্রাম গ্রুপ তৈরি করে না।')}</p></div></div>
+        <div className="storage-choice"><Archive size={24}/><div><strong>{t('Saved Messages','Saved Messages')}</strong><p>{t('A private chat with yourself. Virtual folders stay in your filedeck.ai catalog; they do not create Telegram groups.','নিজের সাথে ব্যক্তিগত চ্যাট। ভার্চুয়াল ফোল্ডার filedeck.ai ক্যাটালগে থাকে, নতুন টেলিগ্রাম গ্রুপ তৈরি করে না।')}</p></div></div>
         <button className="button primary full-width" onClick={chooseStorage} disabled={busy}>{busy?<LoaderCircle size={17} className="spin"/>:<Check size={17}/>} {t('Use Saved Messages','Saved Messages ব্যবহার করুন')}</button>
       </div>
     ) : phase==='connecting' ? (

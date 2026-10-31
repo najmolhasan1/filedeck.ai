@@ -31,7 +31,8 @@ const SESSION_STORAGE_KEY = 'cloudnest_tg_session';
 const API_ID_KEY = 'cloudnest_tg_api_id';
 const API_HASH_KEY = 'cloudnest_tg_api_hash';
 const STORAGE_DESTINATION_KEY = 'cloudnest_storage_destination';
-const CATALOG_SYNC_TAG = '#cloudnest_catalog_sync';
+const CATALOG_SYNC_TAG = '#filedeck_catalog_sync';
+const LEGACY_CATALOG_SYNC_TAG = '#cloudnest_catalog_sync';
 
 export class TelegramBrowserGateway {
   private client: TelegramClient | null = null;
@@ -327,7 +328,7 @@ export class TelegramBrowserGateway {
           ],
           forceFile: true,
         }),
-        message: `CloudNest File: ${fileName}`,
+        message: `filedeck.ai File: ${fileName}`,
         randomId: generateRandomBigInt(),
       })
     );
@@ -498,7 +499,7 @@ export class TelegramBrowserGateway {
       });
 
       const blob = new Blob([content], { type: 'application/json' });
-      await this.uploadFileDirect(blob, 'cloudnest_catalog.json', 'application/json');
+      await this.uploadFileDirect(blob, 'filedeck_catalog.json', 'application/json');
     } catch (err) {
       console.warn('Could not sync catalog backup to Telegram:', err);
     }
@@ -507,11 +508,14 @@ export class TelegramBrowserGateway {
   public async restoreCatalogFromTelegram(): Promise<Catalog | null> {
     try {
       const client = await this.getClient();
-      const messages = await client.getMessages('me', { search: CATALOG_SYNC_TAG, limit: 5 });
+      let messages = await client.getMessages('me', { search: CATALOG_SYNC_TAG, limit: 5 });
+      if (!messages || messages.length === 0) {
+        messages = await client.getMessages('me', { search: LEGACY_CATALOG_SYNC_TAG, limit: 5 });
+      }
       if (!messages || messages.length === 0) return null;
 
       for (const msg of messages) {
-        if (msg.message && msg.message.includes(CATALOG_SYNC_TAG) && msg.media) {
+        if (msg.message && (msg.message.includes(CATALOG_SYNC_TAG) || msg.message.includes(LEGACY_CATALOG_SYNC_TAG)) && msg.media) {
           const buffer = await client.downloadMedia(msg);
           if (buffer) {
             const bytes = typeof buffer === 'string' ? new TextEncoder().encode(buffer) : new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.length);
