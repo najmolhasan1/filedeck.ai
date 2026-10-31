@@ -95,7 +95,7 @@ export default function Drive() {
   const [previewError,setPreviewError]=useState('');
   const [previewProgress,setPreviewProgress]=useState<number|null>(null);
   const [previewBytes,setPreviewBytes]=useState<{current:number;total:number}|null>(null);
-  const [dockOpen,setDockOpen]=useState(true);
+  const [dockOpen,setDockOpen]=useState(false);
   const [dismissedDock,setDismissedDock]=useState(true);
   const sessionTransfersRef=useRef<Set<string>>(new Set());
   const activeTransferTasks=useRef<Map<string,ActiveTransferTask>>(new Map());
@@ -394,7 +394,7 @@ export default function Drive() {
         controllers.current.set(transferId,controller);
         sessionTransfersRef.current.add(transferId);
         setDismissedDock(false);
-        setDockOpen(true);
+        setDockOpen(typeof window !== 'undefined' ? window.innerWidth > 650 : true);
 
         const accumulatedChunks:(Buffer|Uint8Array)[]=resumeOptions?.existingChunks?[...resumeOptions.existingChunks]:[];
         const startOffset=resumeOptions?.startOffset||0;
@@ -529,7 +529,7 @@ export default function Drive() {
     const controller=new AbortController();
     sessionTransfersRef.current.add(id);
     setDismissedDock(false);
-    setDockOpen(true);
+    setDockOpen(typeof window !== 'undefined' ? window.innerWidth > 650 : true);
 
     activeTransferTasks.current.set(id,{
       id,
@@ -747,7 +747,7 @@ export default function Drive() {
       }
 
       notify(t(`Found ${toUpload.length} new file(s). Starting auto-upload…`, `${toUpload.length}টি নতুন ফাইল পাওয়া গেছে। অটো-আপলোড শুরু হচ্ছে…`));
-      setDockOpen(true);
+      setDockOpen(typeof window !== 'undefined' ? window.innerWidth > 650 : true);
       setDismissedDock(false);
 
       let count = 0;
@@ -1045,6 +1045,20 @@ export default function Drive() {
   const activeTransfers=catalog.transfers.filter(item=>!['completed','cancelled','failed'].includes(item.status));
   const recentFinishedTransfers=catalog.transfers.filter(item=>sessionTransfersRef.current.has(item.id)&&['completed','failed'].includes(item.status)).slice(0,3);
   const showDock=!dismissedDock&&(activeTransfers.length>0||recentFinishedTransfers.length>0);
+  const totalActiveBytes=activeTransfers.reduce((sum,item)=>sum+item.bytes,0);
+  const totalTransferredBytes=activeTransfers.reduce((sum,item)=>{
+    const p=item.stagedBytes??item.stageBytes??(item.status==='completed'?item.bytes:0);
+    return sum+p;
+  },0);
+  const overallPct=totalActiveBytes>0
+    ?Math.min(100,Math.round((totalTransferredBytes/totalActiveBytes)*100))
+    :activeTransfers.length===0&&recentFinishedTransfers.length>0?100:0;
+  const hasDownload=activeTransfers.some(item=>item.direction==='download');
+  const isPaused=activeTransfers.length>0&&activeTransfers.every(item=>item.status==='paused');
+  const isCompleted=activeTransfers.length===0&&recentFinishedTransfers.length>0;
+  const ringRadius=22;
+  const ringCircumference=2*Math.PI*ringRadius;
+  const ringOffset=ringCircumference*(1-overallPct/100);
   return <div className="app-shell" onDragEnter={event=>{if(event.dataTransfer.types.includes('Files')){event.preventDefault();draggingDepth.current++;setDragging(true);}}} onDragLeave={event=>{event.preventDefault();if(--draggingDepth.current<=0){setDragging(false);draggingDepth.current=0;}}} onDragOver={event=>event.preventDefault()} onDrop={event=>{event.preventDefault();setDragging(false);draggingDepth.current=0;upload(event.dataTransfer.files);}}>
     {dialog?.type==='settings'&&!serverMode&&<input ref={importInput} type="file" accept="application/json,.json" hidden aria-label="Import catalog JSON" onChange={event=>{const file=event.target.files?.[0];if(file)prepareImport(file);}}/>}
     <input ref={fileInput} type="file" multiple hidden onChange={event=>{if(event.target.files)upload(event.target.files);}} aria-label="Upload files"/>
@@ -1119,32 +1133,42 @@ export default function Drive() {
     </div>
     {dragging&&<div className="drop-overlay"><div><CloudUpload size={58}/><h2>{t('Drop it like it’s home.','আপনার ফাইল এখানে ছেড়ে দিন।')}</h2><p>{serverMode?t('Original files. Up to 500 MiB each. Telegram confirms every completed upload.','মূল ফাইল। প্রতিটি সর্বোচ্চ ৫০০ MiB। টেলিগ্রাম প্রতিটি সম্পন্ন আপলোড নিশ্চিত করে।'):t('Original files. Up to 500 MiB each. Saved in this browser demo.','মূল ফাইল। প্রতিটি সর্বোচ্চ ৫০০ MiB। এই ডেমো ব্রাউজারে সেভ হবে।')}</p></div></div>}
     {showDock && (
-      <aside className={`transfer-dock ${dockOpen ? '' : 'minimized'}`} aria-label={t('Transfers','স্থানান্তর')}>
-        <div className="transfer-dock-header">
-          <div className="transfer-dock-title">
-            {activeTransfers.some(t => t.status === 'saving') ? (
-              <LoaderCircle size={15} className="spin text-green"/>
-            ) : activeTransfers.some(t => t.status === 'paused') ? (
-              <Pause size={15} style={{color: '#d97706'}}/>
-            ) : (
-              <CheckCheck size={15} className="text-green"/>
-            )}
-            <strong>
-              {activeTransfers.length > 0
-                ? t(`${activeTransfers.length} active transfer(s)`,`${activeTransfers.length}টি স্থানান্তর চলছে`)
-                : t('Transfers completed','স্থানান্তর সম্পন্ন')}
-            </strong>
+      dockOpen ? (
+        <aside className="transfer-dock" aria-label={t('Transfers','স্থানান্তর')}>
+          <div className="transfer-dock-header">
+            <div className="transfer-dock-title">
+              {activeTransfers.some(t => t.status === 'saving') ? (
+                <LoaderCircle size={14} className="spin text-green"/>
+              ) : activeTransfers.some(t => t.status === 'paused') ? (
+                <Pause size={14} style={{color: '#d97706'}}/>
+              ) : (
+                <CheckCheck size={14} className="text-green"/>
+              )}
+              <strong>
+                {activeTransfers.length > 0
+                  ? t(`${activeTransfers.length} transferring (${overallPct}%)`,`${activeTransfers.length}টি চলছে (${overallPct}%)`)
+                  : t('Transfers completed','স্থানান্তর সম্পন্ন')}
+              </strong>
+            </div>
+            <div className="transfer-dock-actions">
+              <button
+                className="icon-button"
+                onClick={()=>setDockOpen(false)}
+                aria-label={t('Minimize to icon','আইকনে ছোট করুন')}
+                title={t('Minimize to icon','আইকনে ছোট করুন')}
+              >
+                <ChevronDown size={14}/>
+              </button>
+              <button
+                className="icon-button"
+                onClick={()=>setDismissedDock(true)}
+                aria-label={t('Close','বন্ধ করুন')}
+                title={t('Close','বন্ধ করুন')}
+              >
+                <X size={14}/>
+              </button>
+            </div>
           </div>
-          <div className="transfer-dock-actions">
-            <button className="icon-button" onClick={()=>setDockOpen(!dockOpen)} aria-label={dockOpen ? 'Minimize' : 'Expand'}>
-              <ChevronDown size={14} style={{transform: dockOpen ? 'none' : 'rotate(180deg)', transition: 'transform .2s'}}/>
-            </button>
-            <button className="icon-button" onClick={()=>setDismissedDock(true)} aria-label="Close transfer dock">
-              <X size={14}/>
-            </button>
-          </div>
-        </div>
-        {dockOpen && (
           <div className="transfer-dock-body">
             <div className="transfer-dock-list">
               {[...activeTransfers, ...recentFinishedTransfers].slice(0, 4).map(item => {
@@ -1155,9 +1179,9 @@ export default function Drive() {
                 return (
                   <div className="transfer-dock-item" key={item.id}>
                     <div className="transfer-dock-item-icon">
-                      <TypeIcon kind={item.kind || kindFor('', item.name)} size={16}/>
+                      <TypeIcon kind={item.kind || kindFor('', item.name)} size={15}/>
                       <span className={`transfer-direction-badge ${isDownload ? 'download' : 'upload'}`}>
-                        {isDownload ? <ArrowDown size={8}/> : <ArrowUp size={8}/>}
+                        {isDownload ? <ArrowDown size={7}/> : <ArrowUp size={7}/>}
                       </span>
                     </div>
                     <div className="transfer-dock-item-info">
@@ -1177,16 +1201,16 @@ export default function Drive() {
                       <div className="transfer-dock-item-action">
                         {item.status === 'saving' && (
                           <button className="icon-button" onClick={()=>pauseTransfer(item.id)} aria-label={`Pause ${item.name}`} title={t('Pause','বিরতি')}>
-                            <Pause size={13}/>
+                            <Pause size={12}/>
                           </button>
                         )}
                         {item.status === 'paused' && (
                           <button className="icon-button resume-button" onClick={()=>resumeTransfer(item.id)} aria-label={`Resume ${item.name}`} title={t('Resume','চালিয়ে যান')}>
-                            <Play size={13}/>
+                            <Play size={12}/>
                           </button>
                         )}
                         <button className="icon-button" onClick={()=>cancelTransfer(item.id)} aria-label={`Cancel ${item.name}`} title={t('Cancel','বাতিল')}>
-                          <X size={13}/>
+                          <X size={12}/>
                         </button>
                       </div>
                     )}
@@ -1200,8 +1224,51 @@ export default function Drive() {
               </button>
             </div>
           </div>
-        )}
-      </aside>
+        </aside>
+      ) : (
+        <button
+          className="transfer-fab"
+          onClick={()=>setDockOpen(true)}
+          aria-label={t('View transfer progress','স্থানান্তর অগ্রগতি দেখুন')}
+          title={t(`Transferring: ${overallPct}% (Click to expand)`,`স্থানান্তর: ${overallPct}% (দেখতে ক্লিক করুন)`)}
+        >
+          <svg className="transfer-fab-svg" width="54" height="54" viewBox="0 0 54 54">
+            <circle
+              className="transfer-fab-ring-bg"
+              cx="27"
+              cy="27"
+              r={ringRadius}
+              strokeWidth="4"
+            />
+            <circle
+              className={`transfer-fab-ring-fill ${isPaused ? 'paused' : isCompleted ? 'completed' : ''}`}
+              cx="27"
+              cy="27"
+              r={ringRadius}
+              strokeWidth="4"
+              strokeDasharray={ringCircumference}
+              strokeDashoffset={ringOffset}
+            />
+          </svg>
+          <div className="transfer-fab-content">
+            {isCompleted ? (
+              <CheckCheck size={20} className="text-green" />
+            ) : isPaused ? (
+              <Pause size={17} style={{color: '#d97706'}} />
+            ) : (
+              <>
+                <span className="transfer-fab-dir">
+                  {hasDownload ? <ArrowDown size={11} /> : <ArrowUp size={11} />}
+                </span>
+                <span className="transfer-fab-pct">{overallPct}%</span>
+              </>
+            )}
+          </div>
+          {activeTransfers.length > 1 && (
+            <span className="transfer-fab-badge">{activeTransfers.length}</span>
+          )}
+        </button>
+      )
     )}
     {toast&&<div className="toast" role="status"><Check size={17}/><span>{toast}</span><button onClick={()=>setToast('')} aria-label="Dismiss notification"><X size={15}/></button></div>}
     {dialog&&<Modal title={dialog.type==='new-folder'?t('A new little space','নতুন একটি জায়গা'):dialog.type==='rename'?t('Rename file','ফাইলের নাম পরিবর্তন'):dialog.type==='move'?t('Move to a folder','ফোল্ডারে সরান'):dialog.type==='folder'?t('Manage folder','ফোল্ডার পরিচালনা'):dialog.type==='remove'?t('Remove from this workspace?','ওয়ার্কস্পেস থেকে সরাবেন?'):dialog.type==='connect'?t('Your Telegram, connected.','আপনার টেলিগ্রাম যুক্ত করুন।'):dialog.type==='settings'?t('Make yourself at home','আপনার মতো করে সাজান'):dialog.type==='security'?t('A clear view of your storage','আপনার স্টোরেজ সম্পর্কে'):dialog.type==='disconnect'?t('Disconnect Telegram?','টেলিগ্রাম বিচ্ছিন্ন করবেন?'):dialog.type==='recovery'?t('Recover from Telegram?','টেলিগ্রাম থেকে রিকভার করবেন?'):t('A little help getting started','শুরু করার নির্দেশনা')} onClose={closeDialog} wide={dialog.type==='settings'}>

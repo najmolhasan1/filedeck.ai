@@ -25,34 +25,250 @@
 .transfer-direction-badge.upload{background:#457d59}
 .transfer-direction-badge.download{background:#3b7596}
 
-/* Floating Transfer Progress Dock */
-.transfer-dock{position:fixed;right:max(24px,calc(24px + env(safe-area-inset-right,0px)));bottom:max(24px,calc(24px + env(safe-area-inset-bottom,0px)));width:360px;max-width:calc(100vw - 32px);background:#ffffff;border:1px solid #d9e3d0;border-radius:12px;box-shadow:0 12px 35px rgba(35,53,30,0.18);z-index:90;overflow:hidden;transition:all .25s ease}
-.transfer-dock.minimized .transfer-dock-body{display:none}
-.transfer-dock-header{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#f2f6ec;border-bottom:1px solid #e5ecd9;font-size:12px;color:#354d36}
-.transfer-dock-title{display:flex;align-items:center;gap:9px}
-.transfer-dock-title strong{font-size:12px;font-weight:600;color:#2b422e}
-.transfer-dock-actions{display:flex;align-items:center;gap:4px}
-.transfer-dock-actions .icon-button{width:26px;height:26px}
-.transfer-dock-body{padding:8px 14px 12px;max-height:270px;overflow-y:auto;background:#ffffff}
-.transfer-dock-list{display:flex;flex-direction:column;gap:10px}
-.transfer-dock-item{display:flex;align-items:center;gap:11px;padding:8px 0;border-bottom:1px solid #f1f4eb}
-.transfer-dock-item:last-child{border-bottom:none}
-.transfer-dock-item-icon{position:relative;width:34px;height:34px;border-radius:8px;background:#edf3e5;display:grid;place-items:center;color:#5a754d;flex-shrink:0}
-.transfer-dock-item-info{flex:1;min-width:0}
-.transfer-dock-item-name{font-size:11px;font-weight:600;color:#3b4e39;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.transfer-dock-progress-track{height:5px;background:#e7eedf;border-radius:6px;margin:6px 0 4px;overflow:hidden}
-.transfer-dock-progress-fill{height:100%;background:linear-gradient(90deg,#5f996d,#82b879);border-radius:6px;transition:width .2s ease}
-.transfer-dock-progress-fill.completed{background:#418255}
-.transfer-dock-item-meta{display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#85967b}
-.transfer-dock-item-meta strong{color:#405f3b}
-.transfer-dock-item-action{display:flex;align-items:center;gap:4px;flex-shrink:0}
-.transfer-dock-item-action .icon-button{width:24px;height:24px;color:#9baa90}
-.transfer-dock-item-action .icon-button:hover{color:#b34d4d;background:#faecec}
-.transfer-dock-item-action .icon-button.resume-button:hover{color:#3b7c4d;background:#eaf3e5}
-.transfer-dock-progress-fill.paused{background:#f59e0b}
-.transfer-status.paused{color:#d97706}
-.transfer-dock-footer{margin-top:8px;padding-top:8px;border-top:1px solid #edf1e6;text-align:right}
-.transfer-dock-footer .text-button{font-size:11px;font-weight:600;color:#3c5d38;margin-left:auto}
+/* Floating Transfer Progress Dock & FAB */
+.transfer-dock{
+  position:fixed;
+  right:max(16px,calc(16px + env(safe-area-inset-right,0px)));
+  bottom:max(16px,calc(16px + env(safe-area-inset-bottom,0px)));
+  width:295px;
+  max-width:calc(100vw - 28px);
+  background:#ffffff;
+  border:1px solid #d9e3d0;
+  border-radius:14px;
+  box-shadow:0 12px 35px rgba(35,53,30,0.18);
+  z-index:90;
+  overflow:hidden;
+  transition:all .25s ease;
+}
+.transfer-dock-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:10px 14px;
+  background:#f2f6ec;
+  border-bottom:1px solid #e5ecd9;
+  font-size:11px;
+  color:#354d36;
+}
+.transfer-dock-title{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.transfer-dock-title strong{
+  font-size:11px;
+  font-weight:600;
+  color:#2b422e;
+}
+.transfer-dock-actions{
+  display:flex;
+  align-items:center;
+  gap:3px;
+}
+.transfer-dock-actions .icon-button{
+  width:24px;
+  height:24px;
+}
+.transfer-dock-body{
+  padding:8px 12px 10px;
+  max-height:260px;
+  overflow-y:auto;
+  background:#ffffff;
+}
+.transfer-dock-list{
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+}
+.transfer-dock-item{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:6px 0;
+  border-bottom:1px solid #f1f4eb;
+}
+.transfer-dock-item:last-child{
+  border-bottom:none;
+}
+.transfer-dock-item-icon{
+  position:relative;
+  width:30px;
+  height:30px;
+  border-radius:7px;
+  background:#edf3e5;
+  display:grid;
+  place-items:center;
+  color:#5a754d;
+  flex-shrink:0;
+}
+.transfer-dock-item-info{
+  flex:1;
+  min-width:0;
+}
+.transfer-dock-item-name{
+  font-size:10.5px;
+  font-weight:600;
+  color:#3b4e39;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+.transfer-dock-progress-track{
+  height:4px;
+  background:#e7eedf;
+  border-radius:4px;
+  margin:4px 0 3px;
+  overflow:hidden;
+}
+.transfer-dock-progress-fill{
+  height:100%;
+  background:linear-gradient(90deg,#5f996d,#82b879);
+  border-radius:4px;
+  transition:width .2s ease;
+}
+.transfer-dock-progress-fill.completed{
+  background:#418255;
+}
+.transfer-dock-progress-fill.paused{
+  background:#f59e0b;
+}
+.transfer-dock-item-meta{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  font-size:9.5px;
+  color:#85967b;
+}
+.transfer-dock-item-meta strong{
+  color:#405f3b;
+}
+.transfer-dock-item-action{
+  display:flex;
+  align-items:center;
+  gap:3px;
+  flex-shrink:0;
+}
+.transfer-dock-item-action .icon-button{
+  width:22px;
+  height:22px;
+  color:#9baa90;
+}
+.transfer-dock-item-action .icon-button:hover{
+  color:#b34d4d;
+  background:#faecec;
+}
+.transfer-dock-item-action .icon-button.resume-button:hover{
+  color:#3b7c4d;
+  background:#eaf3e5;
+}
+.transfer-status.paused{
+  color:#d97706;
+}
+.transfer-dock-footer{
+  margin-top:6px;
+  padding-top:6px;
+  border-top:1px solid #edf1e6;
+  text-align:right;
+}
+.transfer-dock-footer .text-button{
+  font-size:10px;
+  font-weight:600;
+  color:#3c5d38;
+  margin-left:auto;
+}
+
+/* Floating Circular Transfer Progress FAB */
+.transfer-fab{
+  position:fixed;
+  right:max(16px,calc(16px + env(safe-area-inset-right,0px)));
+  bottom:max(16px,calc(16px + env(safe-area-inset-bottom,0px)));
+  width:54px;
+  height:54px;
+  border-radius:50%;
+  background:#ffffff;
+  border:none;
+  padding:0;
+  cursor:pointer;
+  display:grid;
+  place-items:center;
+  box-shadow:0 8px 24px rgba(35,53,30,0.22);
+  z-index:90;
+  transition:transform .2s ease, box-shadow .2s ease;
+  user-select:none;
+}
+.transfer-fab:hover{
+  transform:scale(1.06);
+  box-shadow:0 10px 28px rgba(35,53,30,0.28);
+}
+.transfer-fab:active{
+  transform:scale(0.95);
+}
+.transfer-fab-svg{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
+  transform:rotate(-90deg);
+}
+.transfer-fab-ring-bg{
+  fill:#ffffff;
+  stroke:#e6ede0;
+}
+.transfer-fab-ring-fill{
+  fill:none;
+  stroke:#3b7c4d;
+  stroke-linecap:round;
+  transition:stroke-dashoffset .25s ease, stroke .25s ease;
+}
+.transfer-fab-ring-fill.paused{
+  stroke:#d97706;
+}
+.transfer-fab-ring-fill.completed{
+  stroke:#418255;
+}
+.transfer-fab-content{
+  position:relative;
+  z-index:2;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  color:#2f4632;
+  pointer-events:none;
+}
+.transfer-fab-dir{
+  line-height:1;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:#3b7c4d;
+}
+.transfer-fab-pct{
+  font-size:9px;
+  font-weight:700;
+  line-height:1;
+  letter-spacing:-0.2px;
+  margin-top:2px;
+  color:#2f4632;
+  font-variant-numeric:tabular-nums;
+}
+.transfer-fab-badge{
+  position:absolute;
+  top:-2px;
+  right:-2px;
+  background:#365540;
+  color:#edf1d9;
+  font-size:9px;
+  font-weight:700;
+  min-width:17px;
+  height:17px;
+  border-radius:10px;
+  display:grid;
+  place-items:center;
+  padding:0 3px;
+  border:2px solid #ffffff;
+  z-index:3;
+}
 .text-green{color:#457d59}
 .text-amber{color:#d97706}
 
