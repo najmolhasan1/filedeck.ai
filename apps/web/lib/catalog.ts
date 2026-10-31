@@ -104,3 +104,66 @@ export function initialCatalog(): Catalog {
     sample('welcome','Welcome to filedeck.ai.txt','text/plain',511,null,'/samples/welcome.txt')
   ], transfers: []};
 }
+
+export function mergeCatalogs(local: Catalog, remote: Catalog): Catalog {
+  const folderMap = new Map<string, Folder>();
+  for (const f of local.folders || []) {
+    folderMap.set(f.id, f);
+  }
+  for (const f of remote.folders || []) {
+    if (!folderMap.has(f.id)) {
+      folderMap.set(f.id, f);
+    } else {
+      const existing = folderMap.get(f.id)!;
+      folderMap.set(f.id, {
+        ...existing,
+        ...f,
+        syncSource: existing.syncSource || f.syncSource,
+      });
+    }
+  }
+
+  const fileMap = new Map<string, DriveFile>();
+  const remoteMessageIdMap = new Map<number, string>();
+
+  for (const f of remote.files || []) {
+    fileMap.set(f.id, f);
+    if (f.remoteMessageId) {
+      remoteMessageIdMap.set(f.remoteMessageId, f.id);
+    }
+  }
+
+  for (const f of local.files || []) {
+    let targetKey = f.id;
+    if (f.remoteMessageId && remoteMessageIdMap.has(f.remoteMessageId)) {
+      targetKey = remoteMessageIdMap.get(f.remoteMessageId)!;
+    }
+
+    if (!fileMap.has(targetKey)) {
+      fileMap.set(f.id, f);
+      if (f.remoteMessageId) {
+        remoteMessageIdMap.set(f.remoteMessageId, f.id);
+      }
+    } else {
+      const existingRemote = fileMap.get(targetKey)!;
+      fileMap.set(targetKey, {
+        ...existingRemote,
+        ...f,
+        name: f.name || existingRemote.name,
+        favorite: f.favorite || existingRemote.favorite,
+        folderId: f.folderId !== undefined ? f.folderId : existingRemote.folderId,
+        trashedAt: f.trashedAt || existingRemote.trashedAt,
+        remoteMessageId: f.remoteMessageId || existingRemote.remoteMessageId,
+        source: 'server',
+        availability: 'available',
+      });
+    }
+  }
+
+  return {
+    schemaVersion: 1,
+    folders: Array.from(folderMap.values()),
+    files: Array.from(fileMap.values()),
+    transfers: local.transfers || [],
+  };
+}

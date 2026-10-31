@@ -1,9 +1,10 @@
 import { TelegramClient, Api } from 'telegram';
+import { NewMessage } from 'telegram/events/index.js';
 import { StringSession } from 'telegram/sessions/index.js';
 import { computeCheck } from 'telegram/Password.js';
 import { generateRandomBigInt } from 'telegram/Helpers.js';
 import bigInt from 'big-integer';
-import { Catalog, DriveFile, formatBytes, kindFor, MAX_FILE_BYTES, Transfer } from './catalog';
+import { Catalog, DriveFile, formatBytes, kindFor, MAX_FILE_BYTES, mergeCatalogs, Transfer } from './catalog';
 import { commitCatalog, loadCatalog, saveCatalog } from './storage';
 import { NativeFolderSync } from './folder-sync';
 
@@ -970,22 +971,100 @@ export class TelegramBrowserGateway {
     await this.removeFileFromCatalog(file.id);
   }
 
+  private syncSubscribers: Set<(catalog: Catalog, newCount: number) => void> = new Set();
+  private updateHandlerRegistered = false;
+
+  public subscribeToSync(callback: (catalog: Catalog, newCount: number) => void): () => void {
+    this.syncSubscribers.add(callback);
+    void this.setupRealtimeListener();
+    return () => {
+      this.syncSubscribers.delete(callback);
+    };
+  }
+
+  private async setupRealtimeListener(): Promise<void> {
+    if (this.updateHandlerRegistered) return;
+    try {
+      const client = await this.getClient();
+      const isAuth = await client.isUserAuthorized();
+      if (!isAuth) return;
+      this.updateHandlerRegistered = true;
+
+      let debounceTimer: NodeJS.Timeout | null = null;
+      client.addEventHandler(async () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(async () => {
+          try {
+            const result = await this.syncWithTelegram();
+            for (const cb of this.syncSubscribers) {
+              cb(result.catalog, result.newFilesCount);
+            }
+          } catch (e) {
+            console.warn('Realtime sync handler error:', e);
+          }
+        }, 1200);
+      }, new NewMessage({}));
+    } catch (err) {
+      console.warn('Could not setup realtime sync listener:', err);
+    }
+  }
+
+  // Two-way catalog sync across devices (Web <-> Mobile)
+  public async syncWithTelegram(currentCatalog?: Catalog): Promise<{ catalog: Catalog; newFilesCount: number }> {
+    const baseCatalog = currentCatalog || (await loadCatalog()) || { schemaVersion: 1, files: [], folders: [], transfers: [] };
+    try {
+      const client = await this.getClient();
+      const isAuth = await client.isUserAuthorized();
+      if (!isAuth) {
+        return { catalog: baseCatalog, newFilesCount: 0 };
+      }
+
+      // 1. Fetch remote catalog backup from Telegram
+      const remoteCatalog = await this.restoreCatalogFromTelegram();
+      // 2. Scan recent messages in Saved Messages for any files uploaded directly from other Telegram clients
+      const scannedCatalog = await this.scanAndRecoverSavedMessages();
+
+      let merged = baseCatalog;
+      const initialFileIds = new Set(baseCatalog.files.map(f => f.remoteMessageId || f.id));
+
+      if (remoteCatalog) {
+        merged = mergeCatalogs(merged, remoteCatalog);
+      }
+
+      if (scannedCatalog && scannedCatalog.files.length > 0) {
+        merged = mergeCatalogs(merged, scannedCatalog);
+      }
+
+      let newCount = 0;
+      for (const f of merged.files) {
+        const key = f.remoteMessageId || f.id;
+        if (!initialFileIds.has(key)) {
+          newCount++;
+        }
+      }
+
+      // Save merged catalog to local IndexedDB
+      await saveCatalog(merged);
+
+      return { catalog: merged, newFilesCount: newCount };
+    } catch (err) {
+      console.warn('Sync with Telegram encountered error:', err);
+      return { catalog: baseCatalog, newFilesCount: 0 };
+    }
+  }
+
   // Catalog Synchronization across devices using Telegram Saved Messages
   public async loadCatalog(): Promise<Catalog> {
     const local = await loadCatalog();
     if (local && local.files && local.files.length > 0) {
+      // In background, sync latest from Telegram
+      void this.syncWithTelegram(local).catch(() => {});
       return local;
     }
     try {
-      const restored = await this.restoreCatalogFromTelegram();
-      if (restored) {
-        await saveCatalog(restored);
-        return restored;
-      }
-      const scanned = await this.scanAndRecoverSavedMessages();
-      if (scanned && scanned.files.length > 0) {
-        await saveCatalog(scanned);
-        return scanned;
+      const synced = await this.syncWithTelegram(local || undefined);
+      if (synced && synced.catalog.files.length > 0) {
+        return synced.catalog;
       }
     } catch {
       // Return empty or local
@@ -1032,6 +1111,34 @@ export class TelegramBrowserGateway {
   public async restoreCatalogFromTelegram(): Promise<Catalog | null> {
     try {
       const client = await this.getClient();
+      // 1. First inspect the recent 25 messages in Saved Messages directly (fastest & most reliable)
+      const recent = await client.getMessages('me', { limit: 25 });
+      for (const msg of recent || []) {
+        if (msg.media && 'document' in msg.media && msg.media.document) {
+          const doc = msg.media.document as Api.Document;
+          const isCatalogDoc = doc.attributes?.some(a => 'fileName' in a && (a.fileName === 'filedeck_catalog.json' || a.fileName === 'cloudnest_catalog.json'));
+          const isCaption = msg.message && (msg.message.includes(CATALOG_SYNC_TAG) || msg.message.includes(LEGACY_CATALOG_SYNC_TAG));
+          if (isCatalogDoc || isCaption) {
+            const buf = await client.downloadMedia(msg);
+            if (buf) {
+              const str = Buffer.isBuffer(buf) ? buf.toString('utf8') : (typeof buf === 'string' ? buf : new TextDecoder().decode(buf as Uint8Array));
+              try {
+                const parsed = JSON.parse(str);
+                if (parsed && Array.isArray(parsed.files)) {
+                  return {
+                    schemaVersion: 1,
+                    folders: Array.isArray(parsed.folders) ? parsed.folders : [],
+                    files: parsed.files.map((f: DriveFile) => ({ ...f, source: 'server', availability: 'available' })),
+                    transfers: [],
+                  };
+                }
+              } catch {}
+            }
+          }
+        }
+      }
+
+      // 2. If not found in top 25 messages, search via Telegram search API
       let messages = await client.getMessages('me', { search: CATALOG_SYNC_TAG, limit: 10 });
       if (!messages || messages.length === 0) {
         messages = await client.getMessages('me', { search: 'filedeck_catalog.json', limit: 10 });
@@ -1045,10 +1152,9 @@ export class TelegramBrowserGateway {
         if (msg.media) {
           const buffer = await client.downloadMedia(msg);
           if (buffer) {
-            const bytes = typeof buffer === 'string' ? new TextEncoder().encode(buffer) : new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.length);
-            const text = new TextDecoder().decode(bytes);
+            const str = Buffer.isBuffer(buffer) ? buffer.toString('utf8') : (typeof buffer === 'string' ? buffer : new TextDecoder().decode(buffer as Uint8Array));
             try {
-              const parsed = JSON.parse(text);
+              const parsed = JSON.parse(str);
               if (parsed && Array.isArray(parsed.files)) {
                 return {
                   schemaVersion: 1,

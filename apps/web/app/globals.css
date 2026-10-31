@@ -1310,3 +1310,38 @@
   height: 28px;
   max-width: 135px;
 }
+
+/* ==========================================================================
+   Sync Status Button
+   ========================================================================== */
+.sync-status-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 11px;
+  border-radius: 20px;
+  background: #edf3e4;
+  border: 1px solid #d9e3cc;
+  color: #38543b;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+.sync-status-btn:hover {
+  background: #e3ebd6;
+}
+.sync-status-btn.syncing {
+  background: #f4f8ee;
+  color: #627e57;
+}
+@media (max-width: 650px) {
+  .sync-status-text {
+    display: none;
+  }
+  .sync-status-btn {
+    padding: 6px;
+    border-radius: 50%;
+  }
+}
+

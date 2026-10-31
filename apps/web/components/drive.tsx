@@ -106,6 +106,7 @@ export default function Drive() {
   const [previewPoster,setPreviewPoster]=useState<string|null>(null);
   const [cacheStats,setCacheStats]=useState<{totalBytes:number;originalBytes:number;thumbBytes:number;count:number}|null>(null);
   const [clearingCache,setClearingCache]=useState(false);
+  const [isSyncing,setIsSyncing]=useState(false);
   const [dockOpen,setDockOpen]=useState(false);
   const [dismissedDock,setDismissedDock]=useState(true);
   const sessionTransfersRef=useRef<Set<string>>(new Set());
@@ -439,6 +440,72 @@ export default function Drive() {
       clearInterval(interval);
     };
   },[account?.telegram_connected]);
+
+  const triggerCloudSync = useCallback(async (notifyResult = false) => {
+    if (!account?.telegram_connected) return;
+    try {
+      setIsSyncing(true);
+      const result = await telegramGateway.syncWithTelegram(catalogRef.current);
+      if (result.catalog) {
+        updateCatalogState(result.catalog);
+        catalogRef.current = result.catalog;
+        renderCatalog(result.catalog);
+        void saveCatalog(result.catalog);
+      }
+      if (notifyResult) {
+        if (result.newFilesCount > 0) {
+          notify(t(`Synced ${result.newFilesCount} new file(s) from Telegram cloud.`,`টেলিগ্রাম ক্লাউড থেকে ${result.newFilesCount}টি নতুন ফাইল সিঙ্ক হয়েছে।`));
+        } else {
+          notify(t('Drive is fully synced with your Telegram cloud.','ড্রাইভ টেলিগ্রাম ক্লাউডের সাথে সম্পূর্ণরূপে সিঙ্ক করা হয়েছে।'));
+        }
+      }
+    } catch (e) {
+      if (notifyResult) notify(explainError(e));
+    } finally {
+      setIsSyncing(false);
+    }
+  }, [account?.telegram_connected]);
+
+  useEffect(() => {
+    if (!account?.telegram_connected) return;
+
+    // 1. Initial background sync on launch
+    void triggerCloudSync(false);
+
+    // 2. Real-time Telegram push updates listener
+    const unsubscribe = telegramGateway.subscribeToSync((newCatalog, newCount) => {
+      updateCatalogState(newCatalog);
+      catalogRef.current = newCatalog;
+      renderCatalog(newCatalog);
+      void saveCatalog(newCatalog);
+      if (newCount > 0) {
+        notify(t(`Synced ${newCount} new item(s) from Telegram cloud.`,`টেলিগ্রাম ক্লাউড থেকে ${newCount}টি নতুন ফাইল সিঙ্ক হয়েছে।`));
+      }
+    });
+
+    // 3. Auto-sync on window/app focus or visibility change
+    const onFocus = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        void triggerCloudSync(false);
+      }
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onFocus);
+
+    // 4. Background polling every 25 seconds
+    const interval = setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        void triggerCloudSync(false);
+      }
+    }, 25 * 1000);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onFocus);
+      clearInterval(interval);
+    };
+  }, [account?.telegram_connected, triggerCloudSync]);
   useEffect(()=>{
     if(!preview) {
       setPreviewPoster(null);
@@ -1407,7 +1474,7 @@ export default function Drive() {
       </div>
     </aside>
     <div className="main-shell">
-      <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={()=>setMobileNav(true)}><Menu size={22}/></button><div className="topbar-breadcrumb"><Cloud size={17}/><span>{t('Workspace','ওয়ার্কস্পেস')}</span><ChevronRight size={14}/><strong>{pageTitle}</strong></div></div><div className="global-search"><Search size={18}/><input ref={searchInput} value={search} onChange={event=>setSearch(event.target.value)} placeholder={t('Find something in your drive…','ড্রাইভে কিছু খুঁজুন…')} aria-label={t('Search files and tags','ফাইল ও ট্যাগ খুঁজুন')}/>{search?<button aria-label="Clear search" onClick={()=>setSearch('')}><X size={15}/></button>:<kbd>⌘ K</kbd>}</div><div className="topbar-actions"><button className="locale-button" onClick={()=>{const next=locale==='en'?'bn':'en';setLocale(next);localStorage.setItem('cloudnest-locale',next);document.documentElement.lang=next;}}><Languages size={16}/>{locale==='en'?'বাংলা':'English'}</button><span className="topbar-separator"/><button className="avatar" onClick={()=>openDialog({type:'settings'})} aria-label="Workspace settings">N</button></div></header>
+      <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={()=>setMobileNav(true)}><Menu size={22}/></button><div className="topbar-breadcrumb"><Cloud size={17}/><span>{t('Workspace','ওয়ার্কস্পেস')}</span><ChevronRight size={14}/><strong>{pageTitle}</strong></div></div><div className="global-search"><Search size={18}/><input ref={searchInput} value={search} onChange={event=>setSearch(event.target.value)} placeholder={t('Find something in your drive…','ড্রাইভে কিছু খুঁজুন…')} aria-label={t('Search files and tags','ফাইল ও ট্যাগ খুঁজুন')}/>{search?<button aria-label="Clear search" onClick={()=>setSearch('')}><X size={15}/></button>:<kbd>⌘ K</kbd>}</div><div className="topbar-actions">{account?.telegram_connected&&<button type="button" className={`sync-status-btn ${isSyncing?'syncing':''}`} onClick={()=>void triggerCloudSync(true)} title={isSyncing?t('Syncing with Telegram cloud…','টেলিগ্রাম ক্লাউডের সাথে সিঙ্ক হচ্ছে…'):t('Synced with Telegram cloud. Click to refresh.','টেলিগ্রাম ক্লাউডের সাথে সিঙ্ক করা। রিফ্রেশ করতে ক্লিক করুন।')} aria-label="Cloud sync"><RefreshCw size={13} className={isSyncing?'spin':''}/><span className="sync-status-text">{isSyncing?t('Syncing…','সিঙ্ক হচ্ছে…'):t('Synced','সিঙ্কড')}</span></button>}<button className="locale-button" onClick={()=>{const next=locale==='en'?'bn':'en';setLocale(next);localStorage.setItem('cloudnest-locale',next);document.documentElement.lang=next;}}><Languages size={16}/>{locale==='en'?'বাংলা':'English'}</button><span className="topbar-separator"/><button className="avatar" onClick={()=>openDialog({type:'settings'})} aria-label="Workspace settings">N</button></div></header>
       <main>
         <div className="page-heading"><div>{!['all','photos','videos','documents','audio'].includes(view)&&<div className="eyebrow"><span/>{t('A HOME FOR YOUR FILES','আপনার ফাইলের ঠিকানা')}</div>}<h1>{search?t('Search results','অনুসন্ধানের ফলাফল'):pageTitle}<span className="heading-dot">.</span></h1>{view==='trash'?<p>{t('A second chance for the things you might still need.','যে ফাইলগুলো আবার দরকার হতে পারে।')}</p>:view==='transfers'?<p>{t('Every file, every step. Always in the know.','প্রতিটি ফাইলের প্রতিটি ধাপ দেখুন।')}</p>:view==='favorites'?<p>{t('Keep the things you love a little closer.','পছন্দের ফাইলগুলো হাতের কাছে রাখুন।')}</p>:null}</div><div className="heading-actions"><span className="demo-badge"><span/>{serverMode?(account?.telegram_connected?t('Telegram connected','টেলিগ্রাম যুক্ত'):t('Connect Telegram','টেলিগ্রাম যুক্ত করুন')):(account?.telegram_connected||hasInitialSession?t('Telegram connected','টেলিগ্রাম যুক্ত'):t('Demo workspace','ডেমো ওয়ার্কস্পেস'))}</span>{['all','photos','videos','documents','audio'].includes(view)&&<><button disabled={!ready} className="button button-light new-folder-button" onClick={()=>openDialog({type:'new-folder'})}><Plus size={16}/><span>{t('New folder','নতুন ফোল্ডার')}</span></button><button disabled={!ready} className="button primary upload-heading-button" onClick={()=>{if(fileInput.current){if(view==='photos')fileInput.current.accept='image/*';else if(view==='videos')fileInput.current.accept='video/*';else if(view==='documents')fileInput.current.accept='.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.md';else if(view==='audio')fileInput.current.accept='audio/*';else fileInput.current.accept='';fileInput.current.click();}}}><Upload size={16}/><span>{view==='photos'?t('Upload photos','ছবি আপলোড'):view==='videos'?t('Upload videos','ভিডিও আপলোড'):view==='documents'?t('Upload documents','ডকুমেন্ট আপলোড'):view==='audio'?t('Upload audio','অডিও আপলোড'):t('Upload files','ফাইল আপলোড')}</span></button></>}</div></div>
         {serverMode&&serverError&&<div className="server-status-notice" role="status"><div><Info size={19}/><span>{serverError}</span></div><button className="button primary" onClick={()=>openDialog({type:'connect'})}>{t('Connect Telegram','টেলিগ্রাম যুক্ত করুন')}<ArrowRight size={15}/></button></div>}
