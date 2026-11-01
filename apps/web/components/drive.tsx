@@ -8,7 +8,7 @@ import { APIError, ServerGateway, type ServerUser, type UploadDescriptor } from 
 import { telegramGateway, type TelegramUser } from '@/lib/telegram-client';
 import ConnectPanel from './connect-panel';
 import { parseCatalogImport } from '@/lib/catalog-import';
-import { pickFolderForSync, listFilesInFolder, registerWebDirectoryHandle, getNativeThumbnail } from '@/lib/folder-sync';
+import { pickFolderForSync, listFilesInFolder, registerWebDirectoryHandle, getNativeThumbnail, SyncableItem } from '@/lib/folder-sync';
 import { Capacitor } from '@capacitor/core';
 
 const thumbnailCache = new Map<string, string>();
@@ -133,6 +133,7 @@ export default function Drive() {
   const [moveTarget,setMoveTarget]=useState('');
   const [tagValue,setTagValue]=useState('');
   const [isSyncingFolder,setIsSyncingFolder]=useState<string|null>(null);
+  const activeSyncFoldersRef=useRef<Set<string>>(new Set());
   const [deleteConfirmName,setDeleteConfirmName]=useState('');
   const [deleteFilesAction,setDeleteFilesAction]=useState<'root'|'trash'>('root');
   const [isDeletingFolder,setIsDeletingFolder]=useState(false);
@@ -464,9 +465,24 @@ export default function Drive() {
         }
       }
     },4*60*1000);
+    const onVisibilityOrFocus=()=>{
+      if(typeof document!=='undefined'&&document.visibilityState==='visible'){
+        for(const f of catalogRef.current.folders.filter(f=>f.syncSource?.autoSync)){
+          void runFolderSync(f);
+        }
+      }
+    };
+    if(typeof document!=='undefined'){
+      document.addEventListener('visibilitychange',onVisibilityOrFocus);
+      window.addEventListener('focus',onVisibilityOrFocus);
+    }
     return()=>{
       clearTimeout(initialTimer);
       clearInterval(interval);
+      if(typeof document!=='undefined'){
+        document.removeEventListener('visibilitychange',onVisibilityOrFocus);
+        window.removeEventListener('focus',onVisibilityOrFocus);
+      }
     };
   },[account?.telegram_connected]);
 
@@ -1153,9 +1169,51 @@ export default function Drive() {
     }
     if(fileInput.current)fileInput.current.value='';
   };
+  const cleanDuplicates = async (targetFolderId?: string | null) => {
+    const seen = new Map<string, DriveFile>();
+    const toKeep: DriveFile[] = [];
+    let removedCount = 0;
+
+    for (const file of catalogRef.current.files) {
+      if (file.trashedAt || (targetFolderId && file.folderId !== targetFolderId)) {
+        toKeep.push(file);
+        continue;
+      }
+      const sig = `${file.folderId || 'root'}_${(file.originalName || file.name).toLowerCase()}_${file.bytes}`;
+      if (!seen.has(sig)) {
+        seen.set(sig, file);
+        toKeep.push(file);
+      } else {
+        const existing = seen.get(sig)!;
+        if (file.localUri && !existing.localUri) existing.localUri = file.localUri;
+        if (file.remoteMessageId && !existing.remoteMessageId) existing.remoteMessageId = file.remoteMessageId;
+        removedCount++;
+      }
+    }
+
+    if (removedCount > 0) {
+      const updatedCatalog = {
+        ...catalogRef.current,
+        files: toKeep,
+      };
+      catalogRef.current = updatedCatalog;
+      updateCatalogState(updatedCatalog);
+      await saveCatalog(updatedCatalog);
+      if (account?.telegram_connected) {
+        void telegramGateway.syncCatalogToTelegram(updatedCatalog);
+      }
+      notify(t(`Cleaned ${removedCount} duplicate file(s).`, `${removedCount}টি ডুপ্লিকেট ফাইল সফলভাবে সরানো হয়েছে।`));
+    } else {
+      notify(t('No duplicate files found.', 'কোনো ডুপ্লিকেট ফাইল পাওয়া যায়নি।'));
+    }
+  };
   const runFolderSync = async (folder: Folder, forceReupload = false) => {
     if (!folder.syncSource) return;
-    if (isSyncingFolder === folder.id) return;
+    if (activeSyncFoldersRef.current.has(folder.id)) {
+      console.log(`[FolderSync] Folder ${folder.name} is already syncing. Skipping duplicate trigger.`);
+      return;
+    }
+    activeSyncFoldersRef.current.add(folder.id);
     setIsSyncingFolder(folder.id);
     notify(t(`Scanning "${folder.syncSource.pathName}" for files…`, `"${folder.syncSource.pathName}" ফোল্ডারে ফাইল স্ক্যান হচ্ছে…`));
 
@@ -1166,33 +1224,66 @@ export default function Drive() {
         return;
       }
 
-      // Link localUri to any existing files in this folder on native platform
-      if (items.length > 0) {
-        const itemUriMap = new Map<string, string>();
-        for (const it of items) {
-          if (it.uri) itemUriMap.set(it.name, it.uri);
-        }
-        let catalogNeedsUpdate = false;
-        const updatedFileList = catalogRef.current.files.map(f => {
-          if (f.folderId === folder.id && !f.localUri && itemUriMap.has(f.originalName || f.name)) {
-            catalogNeedsUpdate = true;
-            return { ...f, localUri: itemUriMap.get(f.originalName || f.name) };
+      // 1. Build lookup tables for discovered items
+      const itemUriMap = new Map<string, string>();
+      const itemMapBySig = new Map<string, SyncableItem>();
+      for (const it of items) {
+        if (it.uri) itemUriMap.set(it.name, it.uri);
+        itemMapBySig.set(`${it.name.toLowerCase()}_${it.size}`, it);
+      }
+
+      // 2. Link localUri and folderId to any existing files in catalog
+      let catalogNeedsUpdate = false;
+      const updatedFileList = catalogRef.current.files.map(f => {
+        if (f.trashedAt) return f;
+        const fname = (f.originalName || f.name).toLowerCase();
+        const match = itemMapBySig.get(`${fname}_${f.bytes}`) || (itemUriMap.has(f.originalName || f.name) ? { uri: itemUriMap.get(f.originalName || f.name) } : null);
+        if (match) {
+          let modified = false;
+          let newF = { ...f };
+          if (!f.folderId && folder.id) {
+            newF.folderId = folder.id;
+            modified = true;
           }
-          return f;
-        });
-        if (catalogNeedsUpdate) {
-          updateCatalogState({ ...catalogRef.current, files: updatedFileList });
-          void saveCatalog({ ...catalogRef.current, files: updatedFileList });
+          if (match.uri && f.localUri !== match.uri) {
+            newF.localUri = match.uri;
+            modified = true;
+          }
+          if (modified) {
+            catalogNeedsUpdate = true;
+            return newF;
+          }
+        }
+        return f;
+      });
+
+      if (catalogNeedsUpdate) {
+        catalogRef.current = { ...catalogRef.current, files: updatedFileList };
+        updateCatalogState(catalogRef.current);
+        void saveCatalog(catalogRef.current);
+      }
+
+      // 3. Build comprehensive existing signatures to strictly prevent duplicates
+      const existingSignatures = new Set<string>();
+      if (!forceReupload) {
+        for (const f of catalogRef.current.files) {
+          if (f.trashedAt) continue;
+          const origName = (f.originalName || f.name).toLowerCase();
+          const curName = f.name.toLowerCase();
+          existingSignatures.add(`${origName}_${f.bytes}`);
+          existingSignatures.add(`${curName}_${f.bytes}`);
+        }
+        for (const tr of catalogRef.current.transfers) {
+          if (tr.status === 'saving' || tr.status === 'completed') {
+            existingSignatures.add(`${tr.name.toLowerCase()}_${tr.bytes}`);
+          }
+        }
+        for (const tr of transientTransfers.current.values()) {
+          existingSignatures.add(`${tr.name.toLowerCase()}_${tr.bytes}`);
         }
       }
 
-      const existingSignatures = new Set(
-        forceReupload ? [] : catalogRef.current.files
-          .filter(f => f.folderId === folder.id && !f.trashedAt)
-          .map(f => `${f.originalName}_${f.bytes}`)
-      );
-
-      const toUpload = items.filter(item => !existingSignatures.has(`${item.name}_${item.size}`));
+      const toUpload = items.filter(item => !existingSignatures.has(`${item.name.toLowerCase()}_${item.size}`));
 
       if (toUpload.length === 0) {
         notify(t('Folder is already up to date. All files are synced.', 'ফোল্ডারটি আপ টু ডেট আছে। সব ফাইল সিঙ্ক করা।'));
@@ -1213,6 +1304,9 @@ export default function Drive() {
       let count = 0;
       for (const item of toUpload) {
         try {
+          const itemSig = `${item.name.toLowerCase()}_${item.size}`;
+          existingSignatures.add(itemSig);
+
           const transferId = crypto.randomUUID();
           const initialTransfer: Transfer = {
             id: transferId,
@@ -1230,6 +1324,8 @@ export default function Drive() {
             transfers: [initialTransfer, ...catalogRef.current.transfers.filter(tr => tr.id !== transferId)]
           });
 
+          let uploadedFile: DriveFile | undefined;
+
           if (item.file) {
             let thumbBlob: Blob | null = null;
             const isVid = item.file.type.startsWith('video/') || kindFor(item.file.type||'', item.file.name) === 'video';
@@ -1239,7 +1335,7 @@ export default function Drive() {
               else if (isImg) thumbBlob = await generateImageThumbnail(item.file);
             } catch {}
 
-            await (account?.telegram_connected
+            const uploadRes = await (account?.telegram_connected
               ? telegramGateway.upload(item.file, {
                   folderId: folder.id,
                   thumbBlob: thumbBlob || undefined,
@@ -1258,6 +1354,9 @@ export default function Drive() {
                   }
                 })
               : upload([item.file]));
+            if (uploadRes && 'file' in uploadRes) {
+              uploadedFile = (uploadRes as { file: DriveFile }).file;
+            }
           } else if (item.uri) {
             let thumbBlob: Blob | null = null;
             try {
@@ -1285,6 +1384,10 @@ export default function Drive() {
               }
             );
 
+            if (uploadRes?.file) {
+              uploadedFile = uploadRes.file;
+            }
+
             if (thumbBlob && uploadRes?.file?.id) {
               void saveOriginal('thumb-' + uploadRes.file.id, thumbBlob);
               const thumbUrl = URL.createObjectURL(thumbBlob);
@@ -1301,11 +1404,18 @@ export default function Drive() {
             stagedBytes: item.size,
             stageBytes: item.size,
           };
-          const nextCat = await telegramGateway.loadCatalog() || catalogRef.current;
-          updateCatalogState({
-            ...nextCat,
-            transfers: [finishedTransfer, ...nextCat.transfers.filter(t => t.id !== transferId)]
-          });
+
+          const curFiles = uploadedFile
+            ? [uploadedFile, ...catalogRef.current.files.filter(f => f.id !== uploadedFile!.id)]
+            : catalogRef.current.files;
+
+          catalogRef.current = {
+            ...catalogRef.current,
+            files: curFiles,
+            transfers: [finishedTransfer, ...catalogRef.current.transfers.filter(t => t.id !== transferId)]
+          };
+
+          updateCatalogState(catalogRef.current);
         } catch (err) {
           console.error('Error syncing file:', item.name, err);
         }
@@ -1319,10 +1429,16 @@ export default function Drive() {
         } : f)
       }));
 
+      // Flush catalog backup to Telegram once after the sync batch completes
+      if (count > 0 && account?.telegram_connected) {
+        void telegramGateway.syncCatalogToTelegram(catalogRef.current);
+      }
+
       notify(t(`Successfully synced ${count} file(s) to "${folder.name}".`, `"${folder.name}" ফোল্ডারে ${count}টি ফাইল সফলভাবে সিঙ্ক হয়েছে।`));
     } catch (err) {
       notify(explainError(err));
     } finally {
+      activeSyncFoldersRef.current.delete(folder.id);
       setIsSyncingFolder(null);
     }
   };
@@ -1599,7 +1715,7 @@ export default function Drive() {
             </button>
           </div>}
         </div>}
-        {currentFolder?.syncSource&&<div className="folder-sync-banner"><div className="sync-banner-info"><Smartphone size={18}/><div><strong>{t(`Auto-sync active: ${currentFolder.syncSource.pathName}`,`অটো-সিঙ্ক সক্রিয়: ${currentFolder.syncSource.pathName}`)}</strong><span>{currentFolder.syncSource.lastSyncedAt?t(`Last checked: ${formatDate(currentFolder.syncSource.lastSyncedAt)}`,`সর্বশেষ স্ক্যান: ${formatDate(currentFolder.syncSource.lastSyncedAt)}`):t('Ready to sync','সিঙ্কের জন্য প্রস্তুত')}</span></div></div><div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}><button className="button button-light" onClick={()=>runFolderSync(currentFolder)} disabled={isSyncingFolder===currentFolder.id}><RefreshCw size={13} className={isSyncingFolder===currentFolder.id?'spin':''}/>{t('Sync new','নতুন ফাইল সিঙ্ক')}</button><button className="button button-light" onClick={()=>runFolderSync(currentFolder, true)} disabled={isSyncingFolder===currentFolder.id} title={t('Re-read and upload full uncorrupted files','সম্পূর্ণ নিখুঁতভাবে সব ফাইল আবার আপলোড করুন')}><RefreshCw size={13}/>{t('Full re-sync','সম্পূর্ণ রি-সিঙ্ক')}</button></div></div>}
+        {currentFolder?.syncSource&&<div className="folder-sync-banner"><div className="sync-banner-info"><Smartphone size={18}/><div><strong>{t(`Auto-sync active: ${currentFolder.syncSource.pathName}`,`অটো-সিঙ্ক সক্রিয়: ${currentFolder.syncSource.pathName}`)}</strong><span>{currentFolder.syncSource.lastSyncedAt?t(`Last checked: ${formatDate(currentFolder.syncSource.lastSyncedAt)}`,`সর্বশেষ স্ক্যান: ${formatDate(currentFolder.syncSource.lastSyncedAt)}`):t('Ready to sync','সিঙ্কের জন্য প্রস্তুত')}</span></div></div><div style={{display:'flex',gap:'8px',flexWrap:'wrap'}}><button className="button button-light" onClick={()=>runFolderSync(currentFolder)} disabled={isSyncingFolder===currentFolder.id}><RefreshCw size={13} className={isSyncingFolder===currentFolder.id?'spin':''}/>{t('Sync new','নতুন ফাইল সিঙ্ক')}</button><button className="button button-light" onClick={()=>runFolderSync(currentFolder, true)} disabled={isSyncingFolder===currentFolder.id} title={t('Re-read and upload full uncorrupted files','সম্পূর্ণ নিখুঁতভাবে সব ফাইল আবার আপলোড করুন')}><RefreshCw size={13}/>{t('Full re-sync','সম্পূর্ণ রি-সিঙ্ক')}</button><button className="button button-light" onClick={()=>cleanDuplicates(currentFolder.id)} title={t('Remove duplicate files in this folder','এই ফোল্ডারের অতিরিক্ত ডুপ্লিকেট ফাইল পরিষ্কার করুন')}><CheckCheck size={13}/>{t('Clean duplicates','ডুপ্লিকেট রিমুভ')}</button></div></div>}
         {((['all','photos','videos','documents','audio'].includes(view)) && (displayedFolders.length>0 || (view==='all' && !search && !folderId))) && (
           <section className="folders-section">
             <div className="section-heading">

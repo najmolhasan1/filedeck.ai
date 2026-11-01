@@ -2,11 +2,13 @@ package ai.filedeck.app;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.net.Uri;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
+import android.provider.DocumentsContract;
 import android.util.Base64;
 import android.util.Size;
 import androidx.activity.result.ActivityResult;
@@ -51,9 +53,16 @@ public class FolderSyncPlugin extends Plugin {
             Uri treeUri = result.getData().getData();
             if (treeUri != null) {
                 try {
+                    int takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
+                    if (result.getData().getFlags() != 0) {
+                        takeFlags = result.getData().getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                    }
+                    if (takeFlags == 0) {
+                        takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION;
+                    }
                     getContext().getContentResolver().takePersistableUriPermission(
                         treeUri,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        takeFlags
                     );
                 } catch (Exception ignored) {}
 
@@ -80,24 +89,95 @@ public class FolderSyncPlugin extends Plugin {
 
         try {
             Uri treeUri = Uri.parse(uriStr);
-            DocumentFile dir = DocumentFile.fromTreeUri(getContext(), treeUri);
-            if (dir == null || !dir.isDirectory()) {
-                call.reject("Directory not found or inaccessible");
-                return;
-            }
+
+            // Continually ensure persistable read permission is active
+            try {
+                getContext().getContentResolver().takePersistableUriPermission(
+                    treeUri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                );
+            } catch (Exception ignored) {}
 
             JSArray filesArray = new JSArray();
-            DocumentFile[] files = dir.listFiles();
-            if (files != null) {
-                for (DocumentFile f : files) {
-                    if (f.isFile() && f.exists() && f.length() > 0) {
-                        JSObject item = new JSObject();
-                        item.put("name", f.getName());
-                        item.put("size", f.length());
-                        item.put("lastModified", f.lastModified());
-                        item.put("mimeType", f.getType() != null ? f.getType() : "application/octet-stream");
-                        item.put("uri", f.getUri().toString());
-                        filesArray.put(item);
+
+            // High-speed direct query via DocumentsContract (1 query in ~30ms instead of thousands of IPC calls)
+            boolean querySuccess = false;
+            try {
+                String treeDocId;
+                if (DocumentsContract.isDocumentUri(getContext(), treeUri)) {
+                    treeDocId = DocumentsContract.getDocumentId(treeUri);
+                } else {
+                    treeDocId = DocumentsContract.getTreeDocumentId(treeUri);
+                }
+
+                Uri childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocId);
+                String[] projection = new String[] {
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_SIZE,
+                    DocumentsContract.Document.COLUMN_LAST_MODIFIED
+                };
+
+                Cursor c = getContext().getContentResolver().query(childrenUri, projection, null, null, null);
+                if (c != null) {
+                    try {
+                        int idIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID);
+                        int nameIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME);
+                        int mimeIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE);
+                        int sizeIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE);
+                        int modIdx = c.getColumnIndex(DocumentsContract.Document.COLUMN_LAST_MODIFIED);
+
+                        while (c.moveToNext()) {
+                            String mime = (mimeIdx != -1 && !c.isNull(mimeIdx)) ? c.getString(mimeIdx) : "application/octet-stream";
+                            if (DocumentsContract.Document.MIME_TYPE_DIR.equals(mime)) {
+                                continue;
+                            }
+                            long size = (sizeIdx != -1 && !c.isNull(sizeIdx)) ? c.getLong(sizeIdx) : 0L;
+                            if (size <= 0) continue;
+
+                            String docId = (idIdx != -1 && !c.isNull(idIdx)) ? c.getString(idIdx) : null;
+                            if (docId == null) continue;
+
+                            String name = (nameIdx != -1 && !c.isNull(nameIdx)) ? c.getString(nameIdx) : "file";
+                            long lastModified = (modIdx != -1 && !c.isNull(modIdx)) ? c.getLong(modIdx) : System.currentTimeMillis();
+
+                            Uri fileUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId);
+
+                            JSObject item = new JSObject();
+                            item.put("name", name);
+                            item.put("size", size);
+                            item.put("lastModified", lastModified);
+                            item.put("mimeType", mime);
+                            item.put("uri", fileUri.toString());
+                            filesArray.put(item);
+                        }
+                        querySuccess = true;
+                    } finally {
+                        c.close();
+                    }
+                }
+            } catch (Exception ignored) {
+                // DocumentsContract query fallback below
+            }
+
+            // Fallback to DocumentFile if direct query was unsuccessful and filesArray is empty
+            if (!querySuccess && filesArray.length() == 0) {
+                DocumentFile dir = DocumentFile.fromTreeUri(getContext(), treeUri);
+                if (dir != null && dir.isDirectory()) {
+                    DocumentFile[] files = dir.listFiles();
+                    if (files != null) {
+                        for (DocumentFile f : files) {
+                            if (f.isFile() && f.exists() && f.length() > 0) {
+                                JSObject item = new JSObject();
+                                item.put("name", f.getName());
+                                item.put("size", f.length());
+                                item.put("lastModified", f.lastModified());
+                                item.put("mimeType", f.getType() != null ? f.getType() : "application/octet-stream");
+                                item.put("uri", f.getUri().toString());
+                                filesArray.put(item);
+                            }
+                        }
                     }
                 }
             }

@@ -162,10 +162,37 @@ export function mergeCatalogs(local: Catalog, remote: Catalog): Catalog {
     }
   }
 
+  // Deduplicate any exact duplicate file records (same folder, same name, same size)
+  const dedupedFiles: DriveFile[] = [];
+  const seenSignatures = new Map<string, number>();
+
+  for (const f of fileMap.values()) {
+    if (f.trashedAt) {
+      dedupedFiles.push(f);
+      continue;
+    }
+    const sig = `${f.folderId || 'root'}_${(f.originalName || f.name).toLowerCase()}_${f.bytes}`;
+    if (!seenSignatures.has(sig)) {
+      seenSignatures.set(sig, dedupedFiles.length);
+      dedupedFiles.push(f);
+    } else {
+      const idx = seenSignatures.get(sig)!;
+      const existing = dedupedFiles[idx];
+      dedupedFiles[idx] = {
+        ...existing,
+        localUri: existing.localUri || f.localUri,
+        remoteMessageId: existing.remoteMessageId || f.remoteMessageId,
+        favorite: existing.favorite || f.favorite,
+        tags: Array.from(new Set([...(existing.tags || []), ...(f.tags || [])])),
+        createdAt: existing.createdAt < f.createdAt ? existing.createdAt : f.createdAt,
+      };
+    }
+  }
+
   return {
     schemaVersion: 1,
     folders: Array.from(folderMap.values()),
-    files: Array.from(fileMap.values()),
+    files: dedupedFiles,
     transfers: local.transfers || [],
   };
 }

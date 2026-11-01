@@ -1359,6 +1359,18 @@ export class TelegramBrowserGateway {
     return null;
   }
 
+  private syncCatalogTimer: ReturnType<typeof setTimeout> | null = null;
+
+  public scheduleCatalogSyncToTelegram(catalog: Catalog, delayMs = 6000): void {
+    if (this.syncCatalogTimer) {
+      clearTimeout(this.syncCatalogTimer);
+    }
+    this.syncCatalogTimer = setTimeout(() => {
+      this.syncCatalogTimer = null;
+      void this.syncCatalogToTelegram(catalog);
+    }, delayMs);
+  }
+
   private async addFileToCatalog(file: DriveFile): Promise<void> {
     const catalog = await this.loadCatalog();
     const updated: Catalog = {
@@ -1366,7 +1378,7 @@ export class TelegramBrowserGateway {
       files: [file, ...catalog.files.filter(f => f.id !== file.id)],
     };
     await commitCatalog(updated);
-    void this.syncCatalogToTelegram(updated);
+    this.scheduleCatalogSyncToTelegram(updated, 6000);
   }
 
   private async removeFileFromCatalog(fileId: string): Promise<void> {
@@ -1376,7 +1388,7 @@ export class TelegramBrowserGateway {
       files: catalog.files.filter(f => f.id !== fileId),
     };
     await commitCatalog(updated);
-    void this.syncCatalogToTelegram(updated);
+    this.scheduleCatalogSyncToTelegram(updated, 6000);
   }
 }
 
