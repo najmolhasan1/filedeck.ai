@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Cloud, CloudUpload, Database, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Star, Tag, Trash2, Upload, Volume2, VolumeX, Wifi, X } from 'lucide-react';
+import { AlertTriangle, Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Clock, Cloud, CloudUpload, Database, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Star, Tag, Trash2, Upload, Volume2, VolumeX, Wifi, X } from 'lucide-react';
 import { canMoveFolder, Catalog, DriveFile, FileKind, Folder, FolderKind, getFolderKind, Transfer, formatBytes, initialCatalog, kindFor, MAX_FILE_BYTES, safePreview } from '@/lib/catalog';
 import { clearMediaCache, commitCatalog, getCacheStats, getOriginal, loadCatalog, MAX_CACHE_BYTES, saveCatalog, saveOriginal } from '@/lib/storage';
 import { APIError, ServerGateway, type ServerUser, type UploadDescriptor } from '@/lib/server';
@@ -123,6 +123,7 @@ export default function Drive() {
   const audioRef=useRef<HTMLAudioElement|null>(null);
   const audioObjectUrlRef=useRef<string|null>(null);
   const [mobileNav,setMobileNav]=useState(false);
+  const [moreSheetOpen,setMoreSheetOpen]=useState(false);
   const [menu,setMenu]=useState<string|null>(null);
   const [hero,setHero]=useState(()=>!hasInitialSession);
   const [dragging,setDragging]=useState(false);
@@ -1695,7 +1696,7 @@ export default function Drive() {
       </div>
     </aside>
     <div className="main-shell">
-      <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={()=>setMobileNav(true)}><Menu size={22}/></button><div className="topbar-breadcrumb"><Cloud size={17}/><span>{t('Workspace','ওয়ার্কস্পেস')}</span><ChevronRight size={14}/><strong>{pageTitle}</strong></div></div><div className="global-search"><Search size={18}/><input ref={searchInput} value={search} onChange={event=>setSearch(event.target.value)} placeholder={t('Find something in your drive…','ড্রাইভে কিছু খুঁজুন…')} aria-label={t('Search files and tags','ফাইল ও ট্যাগ খুঁজুন')}/>{search?<button aria-label="Clear search" onClick={()=>setSearch('')}><X size={15}/></button>:<kbd>⌘ K</kbd>}</div><div className="topbar-actions">{account?.telegram_connected&&<button type="button" className={`sync-status-btn ${isSyncing?'syncing':''}`} onClick={()=>void triggerCloudSync(true)} title={isSyncing?t('Syncing with Telegram cloud…','টেলিগ্রাম ক্লাউডের সাথে সিঙ্ক হচ্ছে…'):t('Synced with Telegram cloud. Click to refresh.','টেলিগ্রাম ক্লাউডের সাথে সিঙ্ক করা। রিফ্রেশ করতে ক্লিক করুন।')} aria-label="Cloud sync"><RefreshCw size={13} className={isSyncing?'spin':''}/><span className="sync-status-text">{isSyncing?t('Syncing…','সিঙ্ক হচ্ছে…'):t('Synced','সিঙ্কড')}</span></button>}<button className="locale-button" onClick={()=>{const next=locale==='en'?'bn':'en';setLocale(next);localStorage.setItem('cloudnest-locale',next);document.documentElement.lang=next;}}><Languages size={16}/>{locale==='en'?'বাংলা':'English'}</button><span className="topbar-separator"/><button className="avatar" onClick={()=>openDialog({type:'settings'})} aria-label="Workspace settings">N</button></div></header>
+      <header className="topbar"><div className="topbar-left"><button className="icon-button mobile-menu" aria-label="Open navigation" onClick={()=>setMoreSheetOpen(true)}><Menu size={22}/></button><div className="topbar-breadcrumb"><Cloud size={17}/><span>{t('Workspace','ওয়ার্কস্পেস')}</span><ChevronRight size={14}/><strong>{pageTitle}</strong></div></div><div className="global-search"><Search size={18}/><input ref={searchInput} value={search} onChange={event=>setSearch(event.target.value)} placeholder={t('Find something in your drive…','ড্রাইভে কিছু খুঁজুন…')} aria-label={t('Search files and tags','ফাইল ও ট্যাগ খুঁজুন')}/>{search?<button aria-label="Clear search" onClick={()=>setSearch('')}><X size={15}/></button>:<kbd>⌘ K</kbd>}</div><div className="topbar-actions">{account?.telegram_connected&&<button type="button" className={`sync-status-btn ${isSyncing?'syncing':''}`} onClick={()=>void triggerCloudSync(true)} title={isSyncing?t('Syncing with Telegram cloud…','টেলিগ্রাম ক্লাউডের সাথে সিঙ্ক হচ্ছে…'):t('Synced with Telegram cloud. Click to refresh.','টেলিগ্রাম ক্লাউডের সাথে সিঙ্ক করা। রিফ্রেশ করতে ক্লিক করুন।')} aria-label="Cloud sync"><RefreshCw size={13} className={isSyncing?'spin':''}/><span className="sync-status-text">{isSyncing?t('Syncing…','সিঙ্ক হচ্ছে…'):t('Synced','সিঙ্কড')}</span></button>}<button className="locale-button" onClick={()=>{const next=locale==='en'?'bn':'en';setLocale(next);localStorage.setItem('cloudnest-locale',next);document.documentElement.lang=next;}}><Languages size={16}/>{locale==='en'?'বাংলা':'English'}</button><span className="topbar-separator"/><button className="avatar" onClick={()=>openDialog({type:'settings'})} aria-label="Workspace settings">N</button></div></header>
       <main>
         <div className="page-heading"><div>{!['all','photos','videos','documents','audio'].includes(view)&&<div className="eyebrow"><span/>{t('A HOME FOR YOUR FILES','আপনার ফাইলের ঠিকানা')}</div>}<h1>{search?t('Search results','অনুসন্ধানের ফলাফল'):pageTitle}<span className="heading-dot">.</span></h1>{view==='trash'?<p>{t('A second chance for the things you might still need.','যে ফাইলগুলো আবার দরকার হতে পারে।')}</p>:view==='transfers'?<p>{t('Every file, every step. Always in the know.','প্রতিটি ফাইলের প্রতিটি ধাপ দেখুন।')}</p>:view==='favorites'?<p>{t('Keep the things you love a little closer.','পছন্দের ফাইলগুলো হাতের কাছে রাখুন।')}</p>:null}</div><div className="heading-actions"><span className="demo-badge"><span/>{serverMode?(account?.telegram_connected?t('Telegram connected','টেলিগ্রাম যুক্ত'):t('Connect Telegram','টেলিগ্রাম যুক্ত করুন')):(account?.telegram_connected||hasInitialSession?t('Telegram connected','টেলিগ্রাম যুক্ত'):t('Demo workspace','ডেমো ওয়ার্কস্পেস'))}</span>{['all','photos','videos','documents','audio'].includes(view)&&<><button disabled={!ready} className="button button-light new-folder-button" onClick={()=>openDialog({type:'new-folder'})}><Plus size={16}/><span>{t('New folder','নতুন ফোল্ডার')}</span></button><button disabled={!ready} className="button primary upload-heading-button" onClick={()=>{if(fileInput.current){if(view==='photos')fileInput.current.accept='image/*';else if(view==='videos')fileInput.current.accept='video/*';else if(view==='documents')fileInput.current.accept='.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.md';else if(view==='audio')fileInput.current.accept='audio/*';else fileInput.current.accept='';fileInput.current.click();}}}><Upload size={16}/><span>{view==='photos'?t('Upload photos','ছবি আপলোড'):view==='videos'?t('Upload videos','ভিডিও আপলোড'):view==='documents'?t('Upload documents','ডকুমেন্ট আপলোড'):view==='audio'?t('Upload audio','অডিও আপলোড'):t('Upload files','ফাইল আপলোড')}</span></button></>}</div></div>
         {serverMode&&serverError&&<div className="server-status-notice" role="status"><div><Info size={19}/><span>{serverError}</span></div><button className="button primary" onClick={()=>openDialog({type:'connect'})}>{t('Connect Telegram','টেলিগ্রাম যুক্ত করুন')}<ArrowRight size={15}/></button></div>}
@@ -2466,6 +2467,245 @@ export default function Drive() {
     />
   </div>
 ):safePreview(preview)==='audio'?<div className="audio-preview"><Music2 size={55}/><audio src={previewUrl} controls onError={()=>setPreviewError(t('This audio format cannot be played here. Download the original.','এই অডিও ফরম্যাট এখানে চলবে না। মূল ফাইল ডাউনলোড করুন।'))}/></div>:safePreview(preview)==='pdf'?<iframe src={previewUrl} title={preview.name} sandbox="" referrerPolicy="no-referrer"/>:<div className="preview-fallback"><TypeIcon kind={preview.kind} size={48}/><h3>{t('Some things are best opened at home.','কিছু ফাইল নিজের অ্যাপে খোলাই ভালো।')}</h3><p>{t('A safe preview isn’t available for this format. Download the original to open it with your favorite app.','এই ফরম্যাটের নিরাপদ প্রিভিউ নেই। মূল ফাইল ডাউনলোড করে উপযুক্ত অ্যাপে খুলুন।')}</p></div>}</div><div className="viewer-actions"><button className="button primary" onClick={()=>download(preview)}><Download size={16}/>{t('Download original','মূল ফাইল ডাউনলোড')}</button><button className={`button button-light ${preview.favorite?'favorited':''}`} onClick={()=>favorite(preview)}><Star size={16} fill={preview.favorite?'currentColor':'none'}/>{preview.favorite?t('Favorited','পছন্দে আছে'):t('Favorite','পছন্দে রাখুন')}</button></div><dl className="file-details"><div><dt>{t('Original filename','মূল ফাইলের নাম')}</dt><dd>{preview.originalName}</dd></div><div><dt>{t('Size','আকার')}</dt><dd>{formatBytes(preview.bytes)} <span>({preview.bytes.toLocaleString()} bytes)</span></dd></div><div><dt>{t('Added','যোগ হয়েছে')}</dt><dd>{formatDate(preview.createdAt)}</dd></div><div><dt>{t('Location','অবস্থান')}</dt><dd>{catalog.folders.find(folder=>folder.id===preview.folderId)?.name||t('My drive','আমার ড্রাইভ')}</dd></div><div><dt>{t('Source','উৎস')}</dt><dd>{preview.source==='server'?t('Your Telegram storage','আপনার টেলিগ্রাম স্টোরেজ'):preview.asset?t('Bundled demo sample','ডেমোর নমুনা'):t('This browser · not Telegram','এই ব্রাউজার · টেলিগ্রাম নয়')}</dd></div><div><dt>{t('File type','ফাইলের ধরন')}</dt><dd>{preview.mime}</dd></div>{preview.sha256&&<div className="hash-detail"><dt>SHA-256</dt><dd>{preview.sha256}</dd></div>}</dl><div className="tags-section"><label htmlFor="tag-input"><Tag size={15}/>{t('Tags','ট্যাগ')}</label><div className="tag-list">{preview.tags.map(tag=><button key={tag} onClick={()=>{const next=preview.tags.filter(item=>item!==tag);updateTags(preview,next);}}>{tag}<X size={12}/></button>)}<input id="tag-input" value={tagValue} onChange={event=>setTagValue(event.target.value)} placeholder={t('Add a tag + Enter','ট্যাগ লিখে Enter দিন')} maxLength={40} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();const tag=tagValue.trim();if(tag&&!preview.tags.includes(tag)){const next=[...preview.tags,tag];updateTags(preview,next);}setTagValue('');}}}/></div></div></div></Modal>}
+
+    {/* Mobile Bottom Navigation Bar - Custom Scooped Center Design */}
+    <nav className="mobile-bottom-nav" aria-label={t('Mobile navigation', 'মোবাইল নেভিগেশন')}>
+      <div className="bottom-nav-bar">
+        {/* Left wing: Photos & Videos */}
+        <div className="bottom-nav-wing left">
+          <button
+            type="button"
+            className={`bottom-nav-item ${view === 'photos' && !folderId ? 'active' : ''}`}
+            onClick={() => { setMoreSheetOpen(false); navigate('photos'); }}
+            aria-label={t('Photos', 'ছবি')}
+          >
+            <span className="bottom-nav-icon"><Image size={20} strokeWidth={view === 'photos' ? 2.3 : 1.8} /></span>
+            <span className="bottom-nav-label">{t('Photos', 'ছবি')}</span>
+            {view === 'photos' && !folderId && <span className="bottom-nav-indicator" />}
+          </button>
+
+          <button
+            type="button"
+            className={`bottom-nav-item ${view === 'videos' && !folderId ? 'active' : ''}`}
+            onClick={() => { setMoreSheetOpen(false); navigate('videos'); }}
+            aria-label={t('Videos', 'ভিডিও')}
+          >
+            <span className="bottom-nav-icon"><Film size={20} strokeWidth={view === 'videos' ? 2.3 : 1.8} /></span>
+            <span className="bottom-nav-label">{t('Videos', 'ভিডিও')}</span>
+            {view === 'videos' && !folderId && <span className="bottom-nav-indicator" />}
+          </button>
+        </div>
+
+        {/* Center Notch: Smooth curve cutout + Elevated Squircle Button */}
+        <div className="bottom-nav-center">
+          <svg className="bottom-nav-scoop-svg" viewBox="0 0 88 66" preserveAspectRatio="none" aria-hidden="true">
+            <defs>
+              <linearGradient id="navStrokeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+                <stop offset="0%" stopColor="#2f593e" />
+                <stop offset="50%" stopColor="#4ade80" stopOpacity="0.85" />
+                <stop offset="100%" stopColor="#2f593e" />
+              </linearGradient>
+            </defs>
+            <path d="M 0,0 C 16,0 20,30 44,30 C 68,30 72,0 88,0 L 88,66 L 0,66 Z" fill="#0d1b12" />
+            <path d="M 0,0 C 16,0 20,30 44,30 C 68,30 72,0 88,0" fill="none" stroke="url(#navStrokeGrad)" strokeWidth="1.8" />
+          </svg>
+
+          <button
+            type="button"
+            className={`bottom-nav-center-btn ${view === 'all' && !folderId && !search ? 'active' : ''}`}
+            onClick={() => { setMoreSheetOpen(false); navigate('all'); }}
+            aria-label={t('My drive', 'আমার ড্রাইভ')}
+          >
+            <div className="center-btn-inner">
+              <HardDrive size={22} strokeWidth={2.2} />
+            </div>
+            <span className="center-btn-label">{t('My drive', 'আমার ড্রাইভ')}</span>
+          </button>
+        </div>
+
+        {/* Right wing: Documents & More */}
+        <div className="bottom-nav-wing right">
+          <button
+            type="button"
+            className={`bottom-nav-item ${view === 'documents' && !folderId ? 'active' : ''}`}
+            onClick={() => { setMoreSheetOpen(false); navigate('documents'); }}
+            aria-label={t('Docs', 'ডকুমেন্ট')}
+          >
+            <span className="bottom-nav-icon"><FileText size={20} strokeWidth={view === 'documents' ? 2.3 : 1.8} /></span>
+            <span className="bottom-nav-label">{t('Docs', 'ডকুমেন্ট')}</span>
+            {view === 'documents' && !folderId && <span className="bottom-nav-indicator" />}
+          </button>
+
+          <button
+            type="button"
+            className={`bottom-nav-item ${moreSheetOpen || (['audio', 'favorites', 'recent', 'transfers', 'trash'].includes(view) && !folderId) ? 'active' : ''}`}
+            onClick={() => setMoreSheetOpen(prev => !prev)}
+            aria-label={t('More', 'আরও')}
+            aria-expanded={moreSheetOpen}
+          >
+            <span className="bottom-nav-icon">
+              <Menu size={20} strokeWidth={moreSheetOpen ? 2.3 : 1.8} />
+              {countFor('transfers') > 0 && <span className="nav-badge-dot" />}
+            </span>
+            <span className="bottom-nav-label">{t('More', 'আরও')}</span>
+            {(moreSheetOpen || (['audio', 'favorites', 'recent', 'transfers', 'trash'].includes(view) && !folderId)) && <span className="bottom-nav-indicator" />}
+          </button>
+        </div>
+      </div>
+      <div className="bottom-nav-safe-area" />
+    </nav>
+
+    {/* Mobile More Bottom Sheet Menu */}
+    {moreSheetOpen && (
+      <div className="more-sheet-backdrop" onClick={() => setMoreSheetOpen(false)}>
+        <div className="more-sheet" role="dialog" aria-label={t('More navigation and settings', 'আরও মেনু ও সেটিংস')} onClick={e => e.stopPropagation()}>
+          <div className="more-sheet-header">
+            <div className="sheet-drag-pill" />
+            <div className="more-sheet-title-row">
+              <div className="more-sheet-title">
+                <strong>{t('More workspace options', 'আরও ওয়ার্কস্পেস অপশন')}</strong>
+                <span>{t('All sections & storage tools', 'সব ক্যাটাগরি ও প্রয়োজনীয় টুলস')}</span>
+              </div>
+              <button className="icon-button close-sheet-btn" onClick={() => setMoreSheetOpen(false)} aria-label="Close menu">
+                <X size={18} />
+              </button>
+            </div>
+          </div>
+
+          <div className="more-sheet-content">
+            <div className="more-grid">
+              <button
+                type="button"
+                className={`more-grid-item ${view === 'audio' ? 'active' : ''}`}
+                onClick={() => { setMoreSheetOpen(false); navigate('audio'); }}
+              >
+                <div className="more-item-icon audio"><Music2 size={20} /></div>
+                <strong>{t('Audio', 'অডিও')}</strong>
+                <span>{countFor('audio')} {t('tracks', 'গান')}</span>
+              </button>
+
+              <button
+                type="button"
+                className={`more-grid-item ${view === 'favorites' ? 'active' : ''}`}
+                onClick={() => { setMoreSheetOpen(false); navigate('favorites'); }}
+              >
+                <div className="more-item-icon favorites"><Star size={20} fill={view === 'favorites' ? 'currentColor' : 'none'} /></div>
+                <strong>{t('Favorites', 'পছন্দের ফাইল')}</strong>
+                <span>{countFor('favorites')} {t('starred', 'ফেভারিট')}</span>
+              </button>
+
+              <button
+                type="button"
+                className={`more-grid-item ${view === 'recent' ? 'active' : ''}`}
+                onClick={() => { setMoreSheetOpen(false); navigate('recent'); }}
+              >
+                <div className="more-item-icon recent"><Clock size={20} /></div>
+                <strong>{t('Recent', 'সাম্প্রতিক')}</strong>
+                <span>{t('Activity', 'অ্যাক্টিভিটি')}</span>
+              </button>
+
+              <button
+                type="button"
+                className={`more-grid-item ${view === 'transfers' ? 'active' : ''}`}
+                onClick={() => { setMoreSheetOpen(false); navigate('transfers'); }}
+              >
+                <div className="more-item-icon transfers">
+                  <ArrowUpDown size={20} />
+                  {countFor('transfers') > 0 && <span className="more-badge">{countFor('transfers')}</span>}
+                </div>
+                <strong>{t('Transfers', 'ট্রান্সফার')}</strong>
+                <span>{countFor('transfers') > 0 ? `${countFor('transfers')} ${t('active', 'চলছে')}` : t('Completed', 'সম্পন্ন')}</span>
+              </button>
+
+              <button
+                type="button"
+                className={`more-grid-item ${view === 'trash' ? 'active' : ''}`}
+                onClick={() => { setMoreSheetOpen(false); navigate('trash'); }}
+              >
+                <div className="more-item-icon trash"><Trash2 size={20} /></div>
+                <strong>{t('Trash', 'ট্র্যাশ')}</strong>
+                <span>{countFor('trash')} {t('items', 'আইটেম')}</span>
+              </button>
+
+              <button
+                type="button"
+                className="more-grid-item"
+                onClick={() => { setMoreSheetOpen(false); openDialog({ type: 'settings' }); }}
+              >
+                <div className="more-item-icon settings"><Settings2 size={20} /></div>
+                <strong>{t('Settings', 'সেটিংস')}</strong>
+                <span>{t('Preferences', 'পছন্দসমূহ')}</span>
+              </button>
+            </div>
+
+            <div className="more-quick-actions">
+              <div className="quick-action-title">{t('QUICK ACTIONS', 'কুইক অ্যাকশন')}</div>
+              <div className="quick-action-row">
+                <button
+                  type="button"
+                  className="action-pill primary"
+                  onClick={() => { setMoreSheetOpen(false); openDialog({ type: 'new-folder' }); }}
+                >
+                  <Plus size={16} />
+                  <span>{t('New folder', 'নতুন ফোল্ডার')}</span>
+                </button>
+                <button
+                  type="button"
+                  className="action-pill light"
+                  onClick={() => {
+                    setMoreSheetOpen(false);
+                    if (fileInput.current) {
+                      fileInput.current.accept = '';
+                      fileInput.current.click();
+                    }
+                  }}
+                >
+                  <Upload size={16} />
+                  <span>{t('Upload files', 'ফাইল আপলোড')}</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="more-sheet-footer">
+              <button
+                type="button"
+                className="footer-action-link"
+                onClick={() => { setMoreSheetOpen(false); openDialog({ type: 'connect' }); }}
+              >
+                <Send size={15} />
+                <span>{account?.telegram_connected ? t('Telegram connected', 'টেলিগ্রাম সংযুক্ত') : t('Connect Telegram', 'টেলিগ্রাম যুক্ত করুন')}</span>
+                <ChevronRight size={14} className="chevron" />
+              </button>
+
+              <button
+                type="button"
+                className="footer-action-link"
+                onClick={() => {
+                  const next = locale === 'en' ? 'bn' : 'en';
+                  setLocale(next);
+                  localStorage.setItem('cloudnest-locale', next);
+                  document.documentElement.lang = next;
+                }}
+              >
+                <Languages size={15} />
+                <span>{locale === 'en' ? 'ভাষা: বাংলা করুন' : 'Language: English'}</span>
+                <span className="lang-tag">{locale === 'en' ? 'EN' : 'BN'}</span>
+              </button>
+
+              <button
+                type="button"
+                className="footer-action-link"
+                onClick={() => { setMoreSheetOpen(false); openDialog({ type: 'help' }); }}
+              >
+                <CircleHelp size={15} />
+                <span>{t('Help & Guide', 'সাহায্য ও গাইড')}</span>
+                <ChevronRight size={14} className="chevron" />
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    )}
   </div>;
 }
 
