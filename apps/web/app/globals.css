@@ -1655,40 +1655,44 @@ html, body, * {
     z-index: 90;
     display: flex;
     align-items: flex-end;
-    animation: fadeInSheet 0.2s ease-out;
+    animation: fadeInSheet 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: opacity;
   }
 
   .more-sheet {
     width: 100%;
-    max-height: calc(85vh - 72px);
-    margin-bottom: calc(66px + env(safe-area-inset-bottom, 0px));
-    background: #f7faf3;
-    border: 1.5px solid #d8e2cf;
-    border-radius: 24px;
-    box-shadow: 0 -12px 36px rgba(25, 45, 30, 0.16);
+    max-height: 85vh;
+    margin-bottom: 0;
+    background: #eaf0e3;
+    border: 1.5px solid #cedcc8;
+    border-bottom: none;
+    border-radius: 24px 24px 0 0;
+    box-shadow: 0 -10px 40px rgba(25, 45, 30, 0.14);
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    animation: slideUpSheet 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    animation: slideUpSheet 0.38s cubic-bezier(0.22, 1, 0.36, 1);
+    will-change: transform;
+    transform: translate3d(0, 0, 0);
     z-index: 92;
   }
 
   .more-sheet-header {
     padding: 12px 20px 10px;
-    border-bottom: 1px solid #dfe7d7;
+    border-bottom: 1px solid #d4e0ce;
     display: flex;
     flex-direction: column;
     align-items: center;
     position: relative;
-    background: #edf4e7;
+    background: #e2ebda;
   }
 
   .sheet-drag-pill {
     width: 40px;
     height: 4px;
     border-radius: 3px;
-    background: #9ab486;
-    opacity: 0.8;
+    background: #8fa674;
+    opacity: 0.9;
     margin-bottom: 12px;
   }
 
@@ -1702,7 +1706,7 @@ html, body, * {
   .more-sheet-title strong {
     display: block;
     font-size: 15px;
-    color: #1a3320;
+    color: #172d1c;
     font-weight: 700;
   }
 
@@ -1717,8 +1721,8 @@ html, body, * {
     width: 32px;
     height: 32px;
     border-radius: 50%;
-    background: #dfe8d8;
-    color: #2e4a34;
+    background: #d6e2cf;
+    color: #243e2a;
     display: grid;
     place-items: center;
     border: 0;
@@ -1727,17 +1731,17 @@ html, body, * {
   }
 
   .close-sheet-btn:active {
-    background: #cfdcc7;
+    background: #c7d5bf;
   }
 
   .more-sheet-content {
-    padding: 16px 18px 24px;
+    padding: 16px 18px calc(80px + env(safe-area-inset-bottom, 0px));
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     display: flex;
     flex-direction: column;
     gap: 16px;
-    background: #f7faf3;
+    background: #eaf0e3;
   }
 
   .more-grid {
@@ -1754,23 +1758,23 @@ html, body, * {
     text-align: center;
     padding: 14px 8px;
     border-radius: 14px;
-    background: #ffffff;
-    border: 1px solid #e1e9dc;
-    color: #2e4a34;
+    background: #f4f8ef;
+    border: 1px solid #d5e0cd;
+    color: #243e2a;
     cursor: pointer;
-    box-shadow: 0 2px 6px rgba(35, 55, 38, 0.04);
+    box-shadow: 0 1px 4px rgba(35, 55, 38, 0.04);
     transition: all 0.15s;
   }
 
   .more-grid-item:active {
     transform: scale(0.96);
-    background: #edf5e7;
+    background: #e2ebda;
   }
 
   .more-grid-item.active {
-    background: #e8f2e2;
-    border-color: #8ea26c;
-    color: #1e3a24;
+    background: #dde8d5;
+    border-color: #7b965c;
+    color: #172d1c;
   }
 
   .more-item-icon {
@@ -1781,39 +1785,39 @@ html, body, * {
     place-items: center;
     margin-bottom: 8px;
     position: relative;
-    background: #edf4e6;
+    background: #e2ebda;
     color: #3b5840;
   }
 
   .more-grid-item.active .more-item-icon {
-    background: #8ea26c;
+    background: #7b965c;
     color: #ffffff;
   }
 
-  .more-item-icon.audio { background: #eaf3e0; color: #4e7834; }
-  .more-item-icon.favorites { background: #fef9c3; color: #a16207; }
-  .more-item-icon.recent { background: #e0f2fe; color: #0369a1; }
-  .more-item-icon.transfers { background: #dcfce7; color: #15803d; }
-  .more-item-icon.trash { background: #fee2e2; color: #b91c1c; }
-  .more-item-icon.settings { background: #f3f4f6; color: #4b5563; }
+  .more-item-icon.audio { background: #e6f0dc; color: #446f2c; }
+  .more-item-icon.favorites { background: #fdf6b8; color: #925805; }
+  .more-item-icon.recent { background: #daf0fe; color: #02639b; }
+  .more-item-icon.transfers { background: #d4f7e2; color: #137737; }
+  .more-item-icon.trash { background: #fcdede; color: #b11818; }
+  .more-item-icon.settings { background: #ebeeed; color: #475569; }
 
   .more-grid-item strong {
     font-size: 11px;
     font-weight: 600;
-    color: #1c3522;
+    color: #172d1c;
     margin-bottom: 2px;
   }
 
   .more-grid-item span {
     font-size: 9px;
-    color: #637c66;
+    color: #5d7560;
   }
 
   .more-badge {
     position: absolute;
     top: -3px;
     right: -3px;
-    background: #3b6042;
+    background: #36573c;
     color: #ffffff;
     font-size: 8px;
     font-weight: 700;
@@ -1822,16 +1826,16 @@ html, body, * {
   }
 
   .more-quick-actions {
-    background: #edf4e5;
+    background: #e0e9d9;
     border-radius: 14px;
     padding: 12px 14px;
-    border: 1px solid #dce6d3;
+    border: 1px solid #cfdcc8;
   }
 
   .quick-action-title {
     font-size: 9px;
     letter-spacing: 1px;
-    color: #557257;
+    color: #516d54;
     font-weight: 700;
     margin-bottom: 10px;
   }
@@ -1856,22 +1860,26 @@ html, body, * {
   }
 
   .action-pill.primary {
-    background: #2e4f37;
+    background: #2b4934;
     color: #ffffff;
-    border: 1px solid #233e2b;
+    border: 1px solid #203927;
   }
 
   .action-pill.light {
-    background: #ffffff;
-    color: #233d28;
-    border: 1px solid #d3dec8;
+    background: #f4f8ef;
+    color: #1e3624;
+    border: 1px solid #d5e0cd;
+  }
+
+  .action-pill.light:active {
+    background: #e2ebda;
   }
 
   .more-sheet-footer {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    border-top: 1px solid #dfe7d7;
+    border-top: 1px solid #d4e0ce;
     padding-top: 10px;
   }
 
@@ -1881,7 +1889,7 @@ html, body, * {
     gap: 12px;
     padding: 11px 12px;
     border-radius: 10px;
-    color: #2b4530;
+    color: #243e2a;
     font-size: 12px;
     background: transparent;
     cursor: pointer;
@@ -1890,7 +1898,7 @@ html, body, * {
   }
 
   .footer-action-link:active {
-    background: #edf4e7;
+    background: #e2ebda;
   }
 
   .footer-action-link span {
@@ -1904,7 +1912,7 @@ html, body, * {
 
   .footer-action-link .lang-tag {
     flex: 0 !important;
-    background: #3b6042;
+    background: #36573c;
     color: #ffffff;
     font-size: 9px;
     font-weight: 700;
@@ -1913,13 +1921,21 @@ html, body, * {
   }
 
   @keyframes fadeInSheet {
-    from { opacity: 0; }
-    to { opacity: 1; }
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
 
   @keyframes slideUpSheet {
-    from { transform: translateY(100%); }
-    to { transform: translateY(0); }
+    from {
+      transform: translate3d(0, 100%, 0);
+    }
+    to {
+      transform: translate3d(0, 0, 0);
+    }
   }
 }
 
