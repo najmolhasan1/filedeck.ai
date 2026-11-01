@@ -1389,7 +1389,7 @@
     bottom: 0;
     left: 0;
     right: 0;
-    z-index: 90;
+    z-index: 100;
     pointer-events: none;
     user-select: none;
     -webkit-user-select: none;
@@ -1402,7 +1402,7 @@
     align-items: stretch;
     height: 66px;
     background: transparent;
-    filter: drop-shadow(0 -4px 18px rgba(0, 0, 0, 0.5));
+    filter: drop-shadow(0 -4px 16px rgba(0, 0, 0, 0.25));
   }
 
   .bottom-nav-wing {
@@ -1410,8 +1410,8 @@
     display: flex;
     align-items: center;
     justify-content: space-around;
-    background: #0d1b12;
-    border-top: 1.5px solid #2f593e;
+    background: #8ea26c;
+    border-top: 1.5px solid #758b56;
     padding: 0 4px;
     position: relative;
   }
@@ -1461,12 +1461,12 @@
     width: 52px;
     height: 52px;
     border-radius: 18px;
-    background: linear-gradient(145deg, #183723, #0d1d13);
-    border: 1.5px solid #366649;
+    background: linear-gradient(145deg, #253e30, #14261b);
+    border: 2px solid #8ea26c;
     display: grid;
     place-items: center;
-    color: #b9d8c2;
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55), 0 0 12px rgba(46, 89, 62, 0.4);
+    color: #f1f6ea;
+    box-shadow: 0 6px 18px rgba(18, 33, 23, 0.4), 0 2px 6px rgba(0, 0, 0, 0.25);
     transition: all 0.2s cubic-bezier(0.34, 1.56, 0.64, 1);
   }
 
@@ -1475,15 +1475,15 @@
   }
 
   .bottom-nav-center-btn.active .center-btn-inner {
-    border-color: #4ade80;
-    color: #4ade80;
-    box-shadow: 0 4px 22px rgba(74, 222, 128, 0.5), 0 2px 8px rgba(0, 0, 0, 0.6);
+    border-color: #ffffff;
+    color: #ffffff;
+    box-shadow: 0 4px 22px rgba(18, 33, 23, 0.6), 0 0 10px rgba(255, 255, 255, 0.4);
   }
 
   .center-btn-label {
     font-size: 10px;
-    font-weight: 600;
-    color: #8fa596;
+    font-weight: 700;
+    color: #1f3428;
     margin-top: 5px;
     letter-spacing: -0.2px;
     white-space: nowrap;
@@ -1491,7 +1491,8 @@
   }
 
   .bottom-nav-center-btn.active .center-btn-label {
-    color: #4ade80;
+    color: #0b1910;
+    font-weight: 800;
   }
 
   .bottom-nav-item {
@@ -1505,11 +1506,12 @@
     padding: 6px 2px;
     border: 0;
     background: transparent;
-    color: #8fa596;
+    color: #1f3428;
+    opacity: 0.82;
     cursor: pointer;
     position: relative;
     touch-action: manipulation;
-    transition: color 0.15s, transform 0.15s;
+    transition: color 0.15s, opacity 0.15s, transform 0.15s;
   }
 
   .bottom-nav-item:active {
@@ -1517,7 +1519,8 @@
   }
 
   .bottom-nav-item.active {
-    color: #4ade80;
+    color: #0b1910;
+    opacity: 1;
   }
 
   .bottom-nav-icon {
@@ -1531,13 +1534,13 @@
 
   .bottom-nav-label {
     font-size: 10px;
-    font-weight: 500;
+    font-weight: 600;
     letter-spacing: -0.2px;
     white-space: nowrap;
   }
 
   .bottom-nav-item.active .bottom-nav-label {
-    font-weight: 600;
+    font-weight: 700;
   }
 
   .bottom-nav-indicator {
@@ -1548,7 +1551,7 @@
     width: 14px;
     height: 3px;
     border-radius: 2px;
-    background: #4ade80;
+    background: #0b1910;
   }
 
   .nav-badge-dot {
@@ -1558,24 +1561,24 @@
     width: 7px;
     height: 7px;
     border-radius: 50%;
-    background: #4ade80;
-    box-shadow: 0 0 6px #4ade80;
+    background: #1f3428;
+    box-shadow: 0 0 4px #1f3428;
   }
 
   .bottom-nav-safe-area {
-    background: #0d1b12;
+    background: #8ea26c;
     height: env(safe-area-inset-bottom, 0px);
     pointer-events: auto;
   }
 
-  /* More Bottom Sheet Drawer */
+  /* More Bottom Sheet Drawer - Opens from underneath the navbar, sitting neatly above it */
   .more-sheet-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(8, 17, 12, 0.7);
+    background: rgba(10, 20, 14, 0.6);
     backdrop-filter: blur(8px);
     -webkit-backdrop-filter: blur(8px);
-    z-index: 95;
+    z-index: 90;
     display: flex;
     align-items: flex-end;
     animation: fadeInSheet 0.2s ease-out;
@@ -1583,17 +1586,17 @@
 
   .more-sheet {
     width: 100%;
-    max-height: 82vh;
-    background: #0e1e14;
-    border-top: 1.5px solid #2d543b;
-    border-top-left-radius: 24px;
-    border-top-right-radius: 24px;
-    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.7);
+    max-height: calc(85vh - 72px);
+    margin-bottom: calc(66px + env(safe-area-inset-bottom, 0px));
+    background: #13251a;
+    border: 1.5px solid #2f563d;
+    border-radius: 24px;
+    box-shadow: 0 -8px 32px rgba(0, 0, 0, 0.6);
     display: flex;
     flex-direction: column;
     overflow: hidden;
     animation: slideUpSheet 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-    margin-bottom: env(safe-area-inset-bottom, 0px);
+    z-index: 92;
   }
 
   .more-sheet-header {
@@ -1603,14 +1606,15 @@
     flex-direction: column;
     align-items: center;
     position: relative;
-    background: #112318;
+    background: #172d20;
   }
 
   .sheet-drag-pill {
     width: 40px;
     height: 4px;
     border-radius: 3px;
-    background: rgba(255, 255, 255, 0.25);
+    background: #8ea26c;
+    opacity: 0.7;
     margin-bottom: 12px;
   }
 
@@ -1681,9 +1685,9 @@
   }
 
   .more-grid-item.active {
-    background: rgba(74, 222, 128, 0.12);
-    border-color: rgba(74, 222, 128, 0.4);
-    color: #4ade80;
+    background: rgba(142, 162, 108, 0.18);
+    border-color: #8ea26c;
+    color: #8ea26c;
   }
 
   .more-item-icon {
@@ -1699,11 +1703,11 @@
   }
 
   .more-grid-item.active .more-item-icon {
-    background: #4ade80;
-    color: #0c1a10;
+    background: #8ea26c;
+    color: #102116;
   }
 
-  .more-item-icon.audio { color: #86efac; }
+  .more-item-icon.audio { color: #a3c285; }
   .more-item-icon.favorites { color: #fde047; }
   .more-item-icon.recent { color: #93c5fd; }
   .more-item-icon.transfers { color: #a7f3d0; }
@@ -1726,8 +1730,8 @@
     position: absolute;
     top: -3px;
     right: -3px;
-    background: #4ade80;
-    color: #0c1a10;
+    background: #8ea26c;
+    color: #102116;
     font-size: 8px;
     font-weight: 700;
     border-radius: 8px;
@@ -1744,7 +1748,7 @@
   .quick-action-title {
     font-size: 9px;
     letter-spacing: 1px;
-    color: #7b9784;
+    color: #8fa47b;
     font-weight: 600;
     margin-bottom: 10px;
   }
@@ -1763,15 +1767,15 @@
     padding: 10px 14px;
     border-radius: 10px;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 700;
     cursor: pointer;
     border: 0;
   }
 
   .action-pill.primary {
-    background: #2b5439;
-    color: #ffffff;
-    border: 1px solid #3c724e;
+    background: #8ea26c;
+    color: #102116;
+    border: 1px solid #758b56;
   }
 
   .action-pill.light {
@@ -1817,8 +1821,8 @@
 
   .footer-action-link .lang-tag {
     flex: 0 !important;
-    background: #274b34;
-    color: #a7dfb8;
+    background: #8ea26c;
+    color: #102116;
     font-size: 9px;
     font-weight: 700;
     padding: 2px 6px;

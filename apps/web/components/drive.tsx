@@ -2501,12 +2501,12 @@ export default function Drive() {
           <svg className="bottom-nav-scoop-svg" viewBox="0 0 88 66" preserveAspectRatio="none" aria-hidden="true">
             <defs>
               <linearGradient id="navStrokeGrad" x1="0%" y1="0%" x2="100%" y2="0%">
-                <stop offset="0%" stopColor="#2f593e" />
-                <stop offset="50%" stopColor="#4ade80" stopOpacity="0.85" />
-                <stop offset="100%" stopColor="#2f593e" />
+                <stop offset="0%" stopColor="#758b56" />
+                <stop offset="50%" stopColor="#5d7241" />
+                <stop offset="100%" stopColor="#758b56" />
               </linearGradient>
             </defs>
-            <path d="M 0,0 C 16,0 20,30 44,30 C 68,30 72,0 88,0 L 88,66 L 0,66 Z" fill="#0d1b12" />
+            <path d="M 0,0 C 16,0 20,30 44,30 C 68,30 72,0 88,0 L 88,66 L 0,66 Z" fill="#8ea26c" />
             <path d="M 0,0 C 16,0 20,30 44,30 C 68,30 72,0 88,0" fill="none" stroke="url(#navStrokeGrad)" strokeWidth="1.8" />
           </svg>
 
