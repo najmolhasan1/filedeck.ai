@@ -5,6 +5,7 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.media.MediaMetadataRetriever;
 import android.net.Uri;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
@@ -298,25 +299,76 @@ public class FolderSyncPlugin extends Plugin {
         try {
             Uri fileUri = Uri.parse(uriStr);
             Bitmap bitmap = null;
+
+            // 1. Try ContentResolver.loadThumbnail with high resolution (800x800)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 try {
-                    bitmap = getContext().getContentResolver().loadThumbnail(fileUri, new Size(640, 640), null);
+                    bitmap = getContext().getContentResolver().loadThumbnail(fileUri, new Size(800, 800), null);
                 } catch (Exception ignored) {}
             }
+
+            // 2. If video and loadThumbnail didn't work, use MediaMetadataRetriever
+            if (bitmap == null) {
+                try {
+                    MediaMetadataRetriever mmr = new MediaMetadataRetriever();
+                    mmr.setDataSource(getContext(), fileUri);
+                    bitmap = mmr.getFrameAtTime(1000000, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                    if (bitmap == null) {
+                        bitmap = mmr.getFrameAtTime();
+                    }
+                    mmr.release();
+                } catch (Exception ignored) {}
+            }
+
+            // 3. Fallback for images: decode with smart inSampleSize to max ~800px
             if (bitmap == null) {
                 InputStream is = getContext().getContentResolver().openInputStream(fileUri);
                 if (is != null) {
-                    BitmapFactory.Options opts = new BitmapFactory.Options();
-                    opts.inSampleSize = 2;
-                    bitmap = BitmapFactory.decodeStream(is, null, opts);
+                    BitmapFactory.Options boundsOpts = new BitmapFactory.Options();
+                    boundsOpts.inJustDecodeBounds = true;
+                    BitmapFactory.decodeStream(is, null, boundsOpts);
                     is.close();
+
+                    int origW = boundsOpts.outWidth;
+                    int origH = boundsOpts.outHeight;
+                    if (origW > 0 && origH > 0) {
+                        int sampleSize = 1;
+                        int maxDim = Math.max(origW, origH);
+                        while (maxDim / (sampleSize * 2) >= 800) {
+                            sampleSize *= 2;
+                        }
+                        BitmapFactory.Options decodeOpts = new BitmapFactory.Options();
+                        decodeOpts.inSampleSize = sampleSize;
+                        is = getContext().getContentResolver().openInputStream(fileUri);
+                        if (is != null) {
+                            bitmap = BitmapFactory.decodeStream(is, null, decodeOpts);
+                            is.close();
+                        }
+                    }
                 }
             }
 
             if (bitmap != null) {
+                // Ensure crisp max 800px dimension
+                int bw = bitmap.getWidth();
+                int bh = bitmap.getHeight();
+                int maxDim = Math.max(bw, bh);
+                if (maxDim > 800) {
+                    float ratio = 800.0f / (float) maxDim;
+                    int targetW = Math.max(1, Math.round(bw * ratio));
+                    int targetH = Math.max(1, Math.round(bh * ratio));
+                    Bitmap scaled = Bitmap.createScaledBitmap(bitmap, targetW, targetH, true);
+                    if (scaled != bitmap) {
+                        bitmap.recycle();
+                        bitmap = scaled;
+                    }
+                }
+
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
                 bitmap.compress(Bitmap.CompressFormat.JPEG, 85, baos);
                 byte[] bytes = baos.toByteArray();
+                bitmap.recycle();
+
                 String base64 = Base64.encodeToString(bytes, Base64.NO_WRAP);
                 JSObject ret = new JSObject();
                 ret.put("data", base64);

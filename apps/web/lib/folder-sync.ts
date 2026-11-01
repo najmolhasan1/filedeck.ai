@@ -21,6 +21,13 @@ export async function getNativeThumbnail(uri: string): Promise<Blob | null> {
     for (let i = 0; i < binary.length; i++) {
       bytes[i] = binary.charCodeAt(i);
     }
+    // Verify complete JPEG (must have SOI 0xFF,0xD8 and EOI 0xFF,0xD9)
+    if (bytes.length > 200 && bytes[0] === 0xff && bytes[1] === 0xd8) {
+      if (bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) {
+        console.warn('Incomplete native thumbnail received, skipping.');
+        return null;
+      }
+    }
     return new Blob([bytes], { type: 'image/jpeg' });
   } catch {
     return null;

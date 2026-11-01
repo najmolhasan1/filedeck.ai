@@ -989,7 +989,7 @@ export class TelegramBrowserGateway {
     throw new Error('Could not get file chunk');
   }
 
-  // Fast thumbnail downloader for images and videos (5-15 KB, ~30ms)
+  // Fast thumbnail downloader for images and videos (5-30 KB, ~30ms)
   // Ensures ONLY complete, valid, crisp thumbnails are returned — NEVER truncated grey boxes!
   public async downloadThumbnail(remoteMessageId: number): Promise<Blob | null> {
     try {
@@ -1002,21 +1002,56 @@ export class TelegramBrowserGateway {
       const media = message.media;
       if (!media) return null;
 
+      const isValidCompleteImage = (bytes: Uint8Array): boolean => {
+        if (bytes.length < 200) return false;
+        // If JPEG: must have SOI (0xFF,0xD8) and EOI (0xFF,0xD9)
+        if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+          return bytes[bytes.length - 2] === 0xff && bytes[bytes.length - 1] === 0xd9;
+        }
+        // If PNG
+        if (bytes[0] === 0x89 && bytes[1] === 0x50) return true;
+        // If WebP (RIFF)
+        if (bytes[0] === 0x52 && bytes[1] === 0x49) return true;
+        return true;
+      };
+
       // 1. Photo media
       if (media instanceof Api.MessageMediaPhoto || ('photo' in media && media.photo)) {
         const photo = ('photo' in media && media.photo) ? (media.photo as Api.Photo) : (media as unknown as Api.Photo);
         if (photo && photo.sizes && photo.sizes.length > 0) {
           // Avoid PhotoStrippedSize which causes corrupt grey bottoms
-          const validSizes = photo.sizes.filter(s => !(s instanceof Api.PhotoStrippedSize) && !(s instanceof Api.PhotoSizeEmpty));
+          const validSizes = photo.sizes.filter(s => 
+            !(s instanceof Api.PhotoStrippedSize) && 
+            !(s instanceof Api.PhotoSizeEmpty) &&
+            ('type' in s && s.type !== 'i')
+          );
           if (validSizes.length > 0) {
-            // Pick 'm' (medium ~320px) or first valid size
-            const targetThumb = validSizes.find(s => 'type' in s && s.type === 'm') || validSizes[0];
-            const buf = await client.downloadMedia(message, { thumb: targetThumb });
-            if (buf && typeof buf !== 'string') {
-              const uint8 = Buffer.isBuffer(buf) ? new Uint8Array(buf) : (buf as Uint8Array);
-              if (uint8.length > 1500) {
-                return new Blob([uint8 as unknown as BlobPart], { type: 'image/jpeg' });
+            // Pick 'm' (medium ~320px) or 's' (small ~100px) or first valid size
+            const targetThumb = validSizes.find(s => 'type' in s && s.type === 'm') || 
+                                validSizes.find(s => 'type' in s && s.type === 's') || 
+                                validSizes[0];
+            const thumbType = ('type' in targetThumb && typeof targetThumb.type === 'string') ? targetThumb.type : 'm';
+            try {
+              const res = await client.invoke(
+                new Api.upload.GetFile({
+                  location: new Api.InputPhotoFileLocation({
+                    id: photo.id,
+                    accessHash: photo.accessHash,
+                    fileReference: photo.fileReference,
+                    thumbSize: thumbType,
+                  }),
+                  offset: bigInt.zero,
+                  limit: 1048576,
+                })
+              );
+              if (res instanceof Api.upload.File && res.bytes && res.bytes.length > 200) {
+                const uint8 = new Uint8Array(res.bytes);
+                if (isValidCompleteImage(uint8)) {
+                  return new Blob([uint8 as unknown as BlobPart], { type: 'image/jpeg' });
+                }
               }
+            } catch (err) {
+              console.warn('Direct photo thumbnail MTProto fetch failed:', err);
             }
           }
         }
@@ -1025,34 +1060,55 @@ export class TelegramBrowserGateway {
       else if (media instanceof Api.MessageMediaDocument || ('document' in media && media.document)) {
         const doc = ('document' in media && media.document) ? (media.document as Api.Document) : (media as unknown as Api.Document);
         if (doc && doc.thumbs && doc.thumbs.length > 0) {
-          const validThumbs = doc.thumbs.filter(s => !(s instanceof Api.PhotoStrippedSize) && !(s instanceof Api.PhotoSizeEmpty));
+          const validThumbs = doc.thumbs.filter(s => 
+            !(s instanceof Api.PhotoStrippedSize) && 
+            !(s instanceof Api.PhotoSizeEmpty) &&
+            ('type' in s && s.type !== 'i')
+          );
           if (validThumbs.length > 0) {
-            const targetThumb = validThumbs.find(s => 'type' in s && s.type === 'm') || validThumbs[validThumbs.length - 1];
-            const buf = await client.downloadMedia(message, { thumb: targetThumb });
-            if (buf && typeof buf !== 'string') {
-              const uint8 = Buffer.isBuffer(buf) ? new Uint8Array(buf) : (buf as Uint8Array);
-              if (uint8.length > 1500) {
-                return new Blob([uint8 as unknown as BlobPart], { type: 'image/jpeg' });
+            const targetThumb = validThumbs.find(s => 'type' in s && s.type === 'm') || 
+                                validThumbs.find(s => 'type' in s && s.type === 's') || 
+                                validThumbs[0];
+            const thumbType = ('type' in targetThumb && typeof targetThumb.type === 'string') ? targetThumb.type : 'm';
+            try {
+              const res = await client.invoke(
+                new Api.upload.GetFile({
+                  location: new Api.InputDocumentFileLocation({
+                    id: doc.id,
+                    accessHash: doc.accessHash,
+                    fileReference: doc.fileReference,
+                    thumbSize: thumbType,
+                  }),
+                  offset: bigInt.zero,
+                  limit: 1048576,
+                })
+              );
+              if (res instanceof Api.upload.File && res.bytes && res.bytes.length > 200) {
+                const uint8 = new Uint8Array(res.bytes);
+                if (isValidCompleteImage(uint8)) {
+                  return new Blob([uint8 as unknown as BlobPart], { type: 'image/jpeg' });
+                }
               }
+            } catch (err) {
+              console.warn('Direct document thumbnail MTProto fetch failed:', err);
             }
           }
         }
 
-        // 3. If no valid PhotoSize thumbnail exists, but file is a normal image under 3.5 MB:
-        // Download the full image so the user gets a crystal clear thumbnail without grey corrupt sections!
+        // 3. Fallback: If no valid thumbnail exists, but file is a normal image under 4 MB:
+        // Download the full image with downloadFile so it is guaranteed 100% complete!
         const mime = doc.mimeType || '';
         const fileNameAttr = doc.attributes?.find(a => 'fileName' in a && typeof a.fileName === 'string') as Api.DocumentAttributeFilename | undefined;
         const fn = fileNameAttr?.fileName || '';
         const isImg = mime.startsWith('image/') || /\.(jpe?g|png|webp|avif)$/i.test(fn);
         const docBytes = typeof doc.size === 'number' ? doc.size : (doc.size ? doc.size.toJSNumber() : 0);
-        if (isImg && docBytes > 0 && docBytes <= 3.5 * 1024 * 1024) {
-          const fullBuf = await client.downloadMedia(message);
-          if (fullBuf && typeof fullBuf !== 'string') {
-            const uint8 = Buffer.isBuffer(fullBuf) ? new Uint8Array(fullBuf) : (fullBuf as Uint8Array);
-            if (uint8.length > 1500) {
-              return new Blob([uint8 as unknown as BlobPart], { type: mime || 'image/jpeg' });
+        if (isImg && docBytes > 0 && docBytes <= 4 * 1024 * 1024) {
+          try {
+            const fullBlob = await this.downloadFile(remoteMessageId);
+            if (fullBlob && fullBlob.size > 200) {
+              return fullBlob;
             }
-          }
+          } catch {}
         }
       }
 

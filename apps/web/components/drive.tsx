@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, Archive, ArrowDown, ArrowDownToLine, ArrowLeft, ArrowRight, ArrowUp, ArrowUpDown, ArrowUpFromLine, Check, CheckCheck, ChevronDown, ChevronRight, CircleHelp, Clock, Cloud, CloudUpload, Database, Download, Ellipsis, File, FileAudio, FileImage, FileText, Film, Folder as FolderIcon, FolderOpen, Grid2X2, HardDrive, Heart, Image, Info, Languages, LayoutGrid, List, LoaderCircle, Menu, Music2, Pause, Play, Plus, RefreshCw, RotateCcw, RotateCw, Search, Send, Settings2, ShieldCheck, SlidersHorizontal, Smartphone, Sparkles, Star, Tag, Trash2, Upload, Volume2, VolumeX, Wifi, X } from 'lucide-react';
 import { canMoveFolder, Catalog, DriveFile, FileKind, Folder, FolderKind, getFolderKind, Transfer, formatBytes, initialCatalog, kindFor, MAX_FILE_BYTES, safePreview } from '@/lib/catalog';
-import { clearMediaCache, commitCatalog, getCacheStats, getOriginal, loadCatalog, MAX_CACHE_BYTES, saveCatalog, saveOriginal } from '@/lib/storage';
+import { clearMediaCache, commitCatalog, getCacheStats, getOriginal, loadCatalog, MAX_CACHE_BYTES, removeOriginal, saveCatalog, saveOriginal } from '@/lib/storage';
 import { APIError, ServerGateway, type ServerUser, type UploadDescriptor } from '@/lib/server';
 import { telegramGateway, type TelegramUser } from '@/lib/telegram-client';
 import ConnectPanel from './connect-panel';
@@ -584,7 +584,7 @@ export default function Drive() {
       }
       if(!isMedia && thumbnailCache.has(preview.id)){
         if(!disposed)setPreviewUrl(thumbnailCache.get(preview.id)!);
-        return;
+        // Show crisp thumbnail immediately, but continue to load original if available
       }
 
       // Check if file has localUri on native mobile platform (0 ms instant local playback!)
@@ -608,15 +608,20 @@ export default function Drive() {
         return;
       }
 
-      // Check IndexedDB cached thumbnail (skip corrupt stripped thumbs < 1500 bytes)
+      // Check IndexedDB cached thumbnail (evicts any corrupt truncated thumbs from earlier sessions)
       const cachedThumb = await getOriginal('thumb-' + preview.id);
-      if (cachedThumb && !disposed && cachedThumb.size >= 1500) {
-        const thumbUrl = URL.createObjectURL(cachedThumb);
-        if (isVideo) {
-          setPreviewPoster(thumbUrl);
-        } else if (kind === 'image') {
-          // Display thumbnail immediately in 0 ms!
-          setPreviewUrl(thumbUrl);
+      if (cachedThumb && !disposed && cachedThumb.size >= 1000) {
+        const isComplete = await isBlobCompleteJpeg(cachedThumb);
+        if (isComplete) {
+          const thumbUrl = URL.createObjectURL(cachedThumb);
+          if (isVideo) {
+            setPreviewPoster(thumbUrl);
+          } else if (kind === 'image') {
+            // Display crisp thumbnail immediately in 0 ms!
+            setPreviewUrl(thumbUrl);
+          }
+        } else {
+          void removeOriginal('thumb-' + preview.id);
         }
       }
 
@@ -627,40 +632,65 @@ export default function Drive() {
         }
 
         // Quick thumbnail pre-fetch for instant response (~30-50ms)
-        if (kind === 'image' && !thumbnailCache.has(preview.id) && (!cachedThumb || cachedThumb.size < 1500)) {
+        if (kind === 'image' && !thumbnailCache.has(preview.id) && (!cachedThumb || cachedThumb.size < 1000)) {
           try {
             const thumbBlob = await telegramGateway.downloadThumbnail(preview.remoteMessageId);
-            if (thumbBlob && !disposed && thumbBlob.size >= 1500) {
-              void saveOriginal('thumb-' + preview.id, thumbBlob);
-              const thumbUrl = URL.createObjectURL(thumbBlob);
-              thumbnailCache.set(preview.id, thumbUrl);
-              setPreviewUrl(thumbUrl);
+            if (thumbBlob && !disposed && thumbBlob.size >= 1000) {
+              const isComplete = await isBlobCompleteJpeg(thumbBlob);
+              if (isComplete) {
+                void saveOriginal('thumb-' + preview.id, thumbBlob);
+                const thumbUrl = URL.createObjectURL(thumbBlob);
+                thumbnailCache.set(preview.id, thumbUrl);
+                setPreviewUrl(thumbUrl);
+              }
             }
           } catch {}
-        } else if (isVideo && !videoFrameCache.has(preview.id) && (!cachedThumb || cachedThumb.size < 1500)) {
+        } else if (isVideo && !videoFrameCache.has(preview.id) && (!cachedThumb || cachedThumb.size < 1000)) {
           try {
             const thumbBlob = await telegramGateway.downloadThumbnail(preview.remoteMessageId);
-            if (thumbBlob && !disposed && thumbBlob.size >= 1500) {
-              void saveOriginal('thumb-' + preview.id, thumbBlob);
-              const thumbUrl = URL.createObjectURL(thumbBlob);
-              videoFrameCache.set(preview.id, thumbUrl);
-              setPreviewPoster(thumbUrl);
+            if (thumbBlob && !disposed && thumbBlob.size >= 1000) {
+              const isComplete = await isBlobCompleteJpeg(thumbBlob);
+              if (isComplete) {
+                void saveOriginal('thumb-' + preview.id, thumbBlob);
+                const thumbUrl = URL.createObjectURL(thumbBlob);
+                videoFrameCache.set(preview.id, thumbUrl);
+                setPreviewPoster(thumbUrl);
+              }
             }
           } catch {}
         }
 
-        // For Videos: If Service Worker is active, stream frame-by-frame on-demand like Google Drive!
+        // For Videos: Stream frame-by-frame on-demand like Google Drive!
         if (isVideo) {
-          if (typeof window !== 'undefined' && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
-            const streamUrl = `/stream-media?msgId=${preview.remoteMessageId}&size=${preview.bytes}&mime=${encodeURIComponent(preview.mime || 'video/mp4')}`;
-            if (!disposed) {
-              setPreviewUrl(streamUrl);
-              return;
-            }
+          if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+            try {
+              if (!navigator.serviceWorker.controller) {
+                await Promise.race([
+                  navigator.serviceWorker.ready,
+                  new Promise((r) => setTimeout(r, 600)),
+                ]);
+              }
+              const streamUrl = `/stream-media?msgId=${preview.remoteMessageId}&size=${preview.bytes}&mime=${encodeURIComponent(preview.mime || 'video/mp4')}`;
+              if (!disposed) {
+                setPreviewUrl(streamUrl);
+                return;
+              }
+            } catch {}
           }
+
+          // Fallback if Service Worker is not available: fetch the first 2.5 MB chunk to start playing in 100ms!
+          try {
+            setPreviewProgress(10);
+            const initialChunk = await telegramGateway.getFileChunk(preview.remoteMessageId, 0, Math.min(preview.bytes, 2.5 * 1024 * 1024));
+            if (!disposed && initialChunk.length > 0) {
+              const initialBlob = new Blob([initialChunk as unknown as BlobPart], { type: preview.mime || 'video/mp4' });
+              const initialUrl = URL.createObjectURL(initialBlob);
+              setPreviewUrl(initialUrl);
+            }
+          } catch {}
         }
 
-        // Download full file with dedicated connection bandwidth
+        // Download full original file with progress tracking
         const blob = await telegramGateway.downloadFile(preview.remoteMessageId, {
           onProgress: (ratio, downloaded, total) => {
             if (!disposed) {
@@ -2710,8 +2740,57 @@ export default function Drive() {
 }
 
 function Empty({icon,title,text,action,onAction}: {icon:React.ReactNode;title:string;text:string;action:string;onAction:()=>void}) {return <div className="empty-state"><div className="empty-icon">{icon}</div><h3>{title}</h3><p>{text}</p><button className="button button-light" onClick={onAction}>{action}<ArrowRight size={15}/></button></div>;}
-function generateImageThumbnail(file: Blob): Promise<Blob | null> {
-  if (typeof window === 'undefined' || typeof document === 'undefined') return Promise.resolve(null);
+async function isBlobCompleteJpeg(blob: Blob): Promise<boolean> {
+  if (blob.size < 200) return false;
+  try {
+    const headBuf = await blob.slice(0, 2).arrayBuffer();
+    const head = new Uint8Array(headBuf);
+    if (head[0] !== 0xff || head[1] !== 0xd8) {
+      return true; // Non-JPEG formats (PNG, WebP)
+    }
+    const tailBuf = await blob.slice(blob.size - 2).arrayBuffer();
+    const tail = new Uint8Array(tailBuf);
+    return tail[0] === 0xff && tail[1] === 0xd9;
+  } catch {
+    return false;
+  }
+}
+
+async function generateImageThumbnail(file: Blob): Promise<Blob | null> {
+  if (typeof window === 'undefined') return null;
+  const maxDim = 800; // Crisp high-definition thumbnail (800px)
+
+  // 1. Try createImageBitmap with automatic EXIF orientation
+  if ('createImageBitmap' in window) {
+    try {
+      const bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' as ImageOrientation }).catch(() => createImageBitmap(file));
+      let w = bitmap.width;
+      let h = bitmap.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.max(1, Math.round((h * maxDim) / w));
+          w = maxDim;
+        } else {
+          w = Math.max(1, Math.round((w * maxDim) / h));
+          h = maxDim;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.drawImage(bitmap, 0, 0, w, h);
+        bitmap.close();
+        return await new Promise<Blob | null>((resolve) => {
+          canvas.toBlob((blob) => resolve(blob), 'image/jpeg', 0.88);
+        });
+      }
+      bitmap.close();
+    } catch {}
+  }
+
+  // 2. Fallback to HTMLImageElement
   return new Promise((resolve) => {
     try {
       const img = new window.Image();
@@ -2723,11 +2802,10 @@ function generateImageThumbnail(file: Blob): Promise<Blob | null> {
         URL.revokeObjectURL(objectUrl);
         resolve(result);
       };
-      const timer = setTimeout(() => finish(null), 5000);
+      const timer = setTimeout(() => finish(null), 6000);
       img.onload = () => {
         clearTimeout(timer);
         try {
-          const maxDim = 320;
           let w = img.width || 100;
           let h = img.height || 100;
           if (w > maxDim || h > maxDim) {
@@ -2745,7 +2823,7 @@ function generateImageThumbnail(file: Blob): Promise<Blob | null> {
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(img, 0, 0, w, h);
-            canvas.toBlob((blob) => finish(blob), 'image/jpeg', 0.8);
+            canvas.toBlob((blob) => finish(blob), 'image/jpeg', 0.88);
             return;
           }
         } catch {
@@ -2803,7 +2881,7 @@ function extractVideoFrame(blob: Blob): Promise<string> {
         resolve(result);
       };
 
-      timer = setTimeout(() => finish(''), 6000);
+      timer = setTimeout(() => finish(''), 7000);
 
       video.onloadedmetadata = () => {
         const dur = video.duration;
@@ -2813,9 +2891,9 @@ function extractVideoFrame(blob: Blob): Promise<string> {
 
       video.onseeked = () => {
         try {
-          const width = video.videoWidth || 360;
-          const height = video.videoHeight || 200;
-          const targetWidth = Math.min(380, width);
+          const width = video.videoWidth || 640;
+          const height = video.videoHeight || 360;
+          const targetWidth = Math.min(720, width);
           const targetHeight = Math.max(1, Math.round((height / width) * targetWidth));
           const canvas = document.createElement('canvas');
           canvas.width = targetWidth;
@@ -2823,7 +2901,7 @@ function extractVideoFrame(blob: Blob): Promise<string> {
           const ctx = canvas.getContext('2d');
           if (ctx) {
             ctx.drawImage(video, 0, 0, targetWidth, targetHeight);
-            const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
             finish(dataUrl);
             return;
           }
@@ -2911,28 +2989,36 @@ function LocalThumbnail({file}:{file:DriveFile}) {
             return;
           }
         }
-        // 2. Check IndexedDB cached thumbnail (skip corrupt stripped thumbs < 1500 bytes)
+        // 2. Check IndexedDB cached thumbnail (evicts any corrupt truncated thumbs from earlier sessions)
         const cachedThumb = await getOriginal('thumb-' + file.id);
-        if(cachedThumb && !disposed && cachedThumb.size >= 1500){
-          const thumbUrl = URL.createObjectURL(cachedThumb);
-          if(isVideo) videoFrameCache.set(file.id, thumbUrl);
-          else thumbnailCache.set(file.id, thumbUrl);
-          setUrl(thumbUrl);
-          setLoading(false);
-          return;
-        }
-
-        // 3. Remote Telegram: download ONLY fast valid thumbnail (5-15 KB), NEVER truncated grey boxes!
-        if(file.remoteMessageId){
-          const thumbBlob = await telegramGateway.downloadThumbnail(file.remoteMessageId);
-          if(thumbBlob && !disposed && thumbBlob.size >= 1500){
-            void saveOriginal('thumb-' + file.id, thumbBlob);
-            const thumbUrl = URL.createObjectURL(thumbBlob);
+        if(cachedThumb && !disposed && cachedThumb.size >= 1000){
+          const isComplete = await isBlobCompleteJpeg(cachedThumb);
+          if (isComplete) {
+            const thumbUrl = URL.createObjectURL(cachedThumb);
             if(isVideo) videoFrameCache.set(file.id, thumbUrl);
             else thumbnailCache.set(file.id, thumbUrl);
             setUrl(thumbUrl);
             setLoading(false);
             return;
+          } else {
+            void removeOriginal('thumb-' + file.id);
+          }
+        }
+
+        // 3. Remote Telegram: download ONLY verified complete thumbnail, NEVER truncated grey boxes!
+        if(file.remoteMessageId){
+          const thumbBlob = await telegramGateway.downloadThumbnail(file.remoteMessageId);
+          if(thumbBlob && !disposed && thumbBlob.size >= 1000){
+            const isComplete = await isBlobCompleteJpeg(thumbBlob);
+            if (isComplete) {
+              void saveOriginal('thumb-' + file.id, thumbBlob);
+              const thumbUrl = URL.createObjectURL(thumbBlob);
+              if(isVideo) videoFrameCache.set(file.id, thumbUrl);
+              else thumbnailCache.set(file.id, thumbUrl);
+              setUrl(thumbUrl);
+              setLoading(false);
+              return;
+            }
           }
         }
       } catch (e) {
