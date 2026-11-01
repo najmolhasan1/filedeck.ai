@@ -1420,6 +1420,151 @@ html, body, * {
 }
 
 /* ==========================================================================
+   Preview Modal Media Viewport Fitting & Collapsible File Info (Desktop & Mobile)
+   ========================================================================== */
+.modal-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+  flex-shrink: 0;
+}
+
+.modal-heading h2 {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f3428;
+}
+
+.modal-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.preview-info-toggle-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  color: #4a6750;
+  background: #edf4e7;
+  border: 1px solid #d4e0ce;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+.preview-info-toggle-btn:hover {
+  background: #e2ecda;
+  color: #1e3623;
+}
+
+.preview-info-toggle-btn.active {
+  background: #2b4934;
+  color: #ffffff;
+  border-color: #203927;
+}
+
+.modal {
+  max-height: calc(100dvh - 36px) !important;
+  display: flex !important;
+  flex-direction: column !important;
+  overflow: hidden !important;
+}
+
+.viewer {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - 110px);
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  padding-right: 2px;
+}
+
+.viewer.media-only .viewer-media {
+  max-height: min(64vh, 500px);
+}
+
+.viewer.with-info .viewer-media {
+  max-height: min(38vh, 280px);
+}
+
+.viewer-media {
+  background: #f0f3eb;
+  border: 1px solid #e1e8dc;
+  min-height: 150px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: #7d966a;
+  position: relative;
+  flex-shrink: 0;
+  transition: max-height 0.25s ease;
+}
+
+.viewer-media > img {
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain !important;
+  display: block;
+  margin: auto;
+  border-radius: 8px;
+}
+
+.viewer-actions {
+  display: flex;
+  gap: 8px;
+  margin: 14px 0 10px;
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+.preview-info-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.preview-info-action-btn.active {
+  background: #e2ebda !important;
+  color: #1c3622 !important;
+  border-color: #7b965c !important;
+  font-weight: 600;
+}
+
+.preview-info-accordion {
+  animation: fadeInInfo 0.2s ease-out;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 4px;
+}
+
+@keyframes fadeInInfo {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ==========================================================================
    Mobile Bottom Navigation Bar (Custom Scooped Center Design & More Sheet)
    ========================================================================== */
 
@@ -1447,13 +1592,44 @@ html, body, * {
     width: calc(100vw - 16px) !important;
     z-index: 88 !important;
   }
+  .transfer-fab {
+    bottom: calc(82px + env(safe-area-inset-bottom, 0px)) !important;
+    right: max(16px, calc(16px + env(safe-area-inset-right, 0px))) !important;
+    z-index: 95 !important;
+  }
   .transfer-dock {
-    bottom: calc(78px + env(safe-area-inset-bottom, 0px)) !important;
-    z-index: 87 !important;
+    bottom: calc(82px + env(safe-area-inset-bottom, 0px)) !important;
+    right: max(12px, calc(12px + env(safe-area-inset-right, 0px))) !important;
+    max-height: calc(100dvh - 160px) !important;
+    z-index: 96 !important;
   }
   .toast {
     bottom: calc(84px + env(safe-area-inset-bottom, 0px)) !important;
     z-index: 100 !important;
+  }
+
+  /* Modal on mobile strictly within viewport */
+  .modal-backdrop {
+    padding: 10px !important;
+    align-items: center !important;
+  }
+  .modal {
+    max-height: calc(100dvh - 20px) !important;
+    padding: 16px 14px !important;
+    border-radius: 16px !important;
+    margin: auto !important;
+    width: calc(100vw - 20px) !important;
+  }
+  .viewer {
+    max-height: calc(100dvh - 86px) !important;
+  }
+  .viewer.media-only .viewer-media {
+    max-height: calc(100dvh - 170px) !important;
+    min-height: 140px !important;
+  }
+  .viewer.with-info .viewer-media {
+    max-height: 200px !important;
+    min-height: 120px !important;
   }
 
   .mobile-bottom-nav {

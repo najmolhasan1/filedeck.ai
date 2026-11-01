@@ -34,7 +34,7 @@ type Dialog = {type: 'new-folder'} | {type: 'rename'; file: DriveFile} | {type: 
 const viewLabels: Record<View,[string,string]> = {all:['My drive','আমার ড্রাইভ'],photos:['Photos','ছবি'],videos:['Videos','ভিডিও'],documents:['Documents','ডকুমেন্ট'],audio:['Audio','অডিও'],favorites:['Favorites','পছন্দের ফাইল'],recent:['Recent files','সাম্প্রতিক ফাইল'],trash:['Trash','ট্র্যাশ'],transfers:['Transfers','ট্রান্সফার']};
 const icons = {all: HardDrive, photos: Image, videos: Film, documents: FileText, audio: Music2, favorites: Star, recent: Archive, trash: Trash2, transfers: ArrowDownToLine};
 
-function Modal({children, title, onClose, wide = false}: {children: React.ReactNode; title: string; onClose: () => void; wide?: boolean}) {
+function Modal({children, title, onClose, wide = false, extraHeader}: {children: React.ReactNode; title: string; onClose: () => void; wide?: boolean; extraHeader?: React.ReactNode}) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const before = document.activeElement as HTMLElement | null;
@@ -50,7 +50,20 @@ function Modal({children, title, onClose, wide = false}: {children: React.ReactN
     };
     document.addEventListener('keydown',key); return () => {document.removeEventListener('keydown',key); before?.focus();};
   },[onClose]);
-  return <div className="modal-backdrop" onMouseDown={event => {if (event.target === event.currentTarget) onClose();}}><div ref={ref} className={`modal ${wide?'modal-wide':''}`} role="dialog" aria-modal="true" aria-label={title}><div className="modal-heading"><h2>{title}</h2><button className="icon-button" aria-label="Close dialog" onClick={onClose}><X size={20}/></button></div>{children}</div></div>;
+  return (
+    <div className="modal-backdrop" onMouseDown={event => {if (event.target === event.currentTarget) onClose();}}>
+      <div ref={ref} className={`modal ${wide?'modal-wide':''}`} role="dialog" aria-modal="true" aria-label={title}>
+        <div className="modal-heading">
+          <h2>{title}</h2>
+          <div className="modal-heading-actions">
+            {extraHeader}
+            <button className="icon-button" aria-label="Close dialog" onClick={onClose}><X size={20}/></button>
+          </div>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
 }
 
 function TypeIcon({kind,size=21}: {kind: FileKind;size?: number}) {const Icon = kind==='image'?FileImage:kind==='video'?Film:kind==='audio'?FileAudio:FileText; return <Icon size={size}/>;}
@@ -133,6 +146,8 @@ export default function Drive() {
   const [savingForm,setSavingForm]=useState(false);
   const [moveTarget,setMoveTarget]=useState('');
   const [tagValue,setTagValue]=useState('');
+  const [showPreviewInfo,setShowPreviewInfo]=useState(false);
+  const openPreview=(file:DriveFile)=>{setPreview(file);setShowPreviewInfo(false);setTagValue('');};
   const [isSyncingFolder,setIsSyncingFolder]=useState<string|null>(null);
   const activeSyncFoldersRef=useRef<Set<string>>(new Set());
   const [deleteConfirmName,setDeleteConfirmName]=useState('');
@@ -1859,7 +1874,7 @@ export default function Drive() {
           {visible.map(file=>(
             <article key={file.id} className={`file-card ${selected.has(file.id)?'file-selected':''}`}>
               <div className={`file-thumbnail file-${file.kind}`}>
-                <button className="thumbnail-open" aria-label={`Preview ${file.name}`} onClick={()=>{setPreview(file);setTagValue('');}}>
+                <button className="thumbnail-open" aria-label={`Preview ${file.name}`} onClick={()=>{openPreview(file);}}>
                   {file.kind==='audio'?(
                     <div className="audio-card-thumb">
                       <div className={`audio-disc ${activeAudioFile?.id===file.id&&isPlayingAudio?'spinning':''}`}>
@@ -1925,7 +1940,7 @@ export default function Drive() {
                     <TypeIcon kind={file.kind} size={17}/>
                   )}
                 </div>
-                <button className="file-name" title={file.name} onClick={()=>{setPreview(file);setTagValue('');}}>
+                <button className="file-name" title={file.name} onClick={()=>{openPreview(file);}}>
                   <strong>{file.name}</strong>
                   <span>{formatBytes(file.bytes)}<span>·</span>{formatDate(file.createdAt)}</span>
                 </button>
@@ -1954,7 +1969,7 @@ export default function Drive() {
                               )}
                             </button>
                           )}
-                          <button role="menuitem" onClick={()=>{setPreview(file);setMenu(null);}}><File size={15}/>{t('Preview & details','প্রিভিউ ও বিস্তারিত')}</button>
+                          <button role="menuitem" onClick={()=>{openPreview(file);setMenu(null);}}><File size={15}/>{t('Preview & details','প্রিভিউ ও বিস্তারিত')}</button>
                           <button role="menuitem" onClick={()=>download(file)}><Download size={15}/>{t('Download original','মূল ফাইল ডাউনলোড')}</button>
                           <button role="menuitem" onClick={()=>favorite(file)}><Star size={15}/>{file.favorite?t('Remove favorite','পছন্দ থেকে সরান'):t('Add to favorites','পছন্দে যোগ করুন')}</button>
                           <div className="menu-line"/>
@@ -2451,52 +2466,129 @@ export default function Drive() {
     </Modal>}
     {duplicatePrompt&&<Modal title={t('File already exists in your drive','ফাইলটি ইতোমধ্যে আপনার ড্রাইভে আছে')} onClose={()=>{duplicateDecision.current?.('cancel');duplicateDecision.current=null;setDuplicatePrompt(null);}}><p className="modal-description">{t(`“${duplicatePrompt.name}” already exists in this folder with the exact same size (${formatBytes(duplicatePrompt.existing.bytes)}). Uploading again creates an identical duplicate.`,`“${duplicatePrompt.name}” একই সাইজে (${formatBytes(duplicatePrompt.existing.bytes)}) ইতোমধ্যে এই ফোল্ডারে সংরক্ষিত আছে। আবার আপলোড করলে একই ফাইলের ডুপ্লিকেট তৈরি হবে।`)}</p><div className="duplicate-options"><button className="button button-light" onClick={()=>{duplicateDecision.current?.('keep');duplicateDecision.current=null;setDuplicatePrompt(null);}}>{t('Upload anyway (Keep both)','তাও আপলোড করুন (উভয়টি রাখুন)')}</button><button className="button primary" disabled={!duplicatePrompt.reuseAvailable} onClick={()=>{duplicateDecision.current?.('reuse');duplicateDecision.current=null;setDuplicatePrompt(null);}}>{t('Skip re-uploading','আপলোড বাদ দিন (স্কিপ)')}</button></div><button className="text-button auth-start-over" onClick={()=>{duplicateDecision.current?.('cancel');duplicateDecision.current=null;setDuplicatePrompt(null);}}>{t('Cancel this upload','আপলোড বাতিল করুন')}</button></Modal>}
     {importCandidate&&<Modal title={t('Restore your organization?','ফোল্ডার ও ট্যাগ ফিরিয়ে আনবেন?')} onClose={()=>setImportCandidate(null)}><p className="modal-description">{t(`Import ${importCandidate.folders.length} folders and ${importCandidate.files.length} file records? This replaces the demo catalog metadata. Existing original bytes are kept; the export itself does not contain them. Files imported from another browser may be unavailable.`,`${importCandidate.folders.length}টি ফোল্ডার ও ${importCandidate.files.length}টি ফাইল রেকর্ড আমদানি করবেন? এটি ডেমো ক্যাটালগের মেটাডেটা প্রতিস্থাপন করবে। বিদ্যমান মূল ফাইল থাকবে, রপ্তানিতে মূল ফাইল নেই। অন্য ব্রাউজারের ফাইল অনুপস্থিত থাকতে পারে।`)}</p>{importError&&<p className="form-error" role="alert">{importError}</p>}<div className="modal-actions"><button className="button button-light" onClick={()=>setImportCandidate(null)}>{t('Cancel','বাতিল')}</button><button className="button primary" onClick={restoreImport}>{t('Import metadata','মেটাডেটা আমদানি')}</button></div></Modal>}
-    {preview&&<Modal title={preview.name} onClose={()=>setPreview(null)} wide><div className="viewer"><div className="viewer-media">{previewError?<div className="preview-fallback"><Info size={34}/><p>{previewError}</p></div>:!previewUrl?(
-  safePreview(preview)==='video'&&previewPoster?(
-    <div className="video-player-box" style={{position:'relative',width:'100%',display:'flex',justifyContent:'center',alignItems:'center',background:'#000',borderRadius:'8px',overflow:'hidden',minHeight:'220px'}}>
-      <img src={previewPoster} alt={preview.name} style={{width:'100%',maxHeight:'65vh',objectFit:'contain',opacity:0.65}}/>
-      <div className="video-buffering-overlay" style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.4)',color:'#fff',padding:'20px'}}>
-        <LoaderCircle size={36} className="spin" style={{color:'#fff',marginBottom:'10px'}}/>
-        <strong style={{fontSize:'14px',marginBottom:'6px'}}>{t('Buffering video from Telegram…','টেলিগ্রাম থেকে ভিডিও লোড হচ্ছে…')}</strong>
-        {previewProgress!==null&&<>
-          <div className="preview-progress-track" style={{width:'80%',maxWidth:'280px',height:'6px',background:'rgba(255,255,255,0.25)',borderRadius:'3px',overflow:'hidden',margin:'6px 0'}}>
-            <div className="preview-progress-fill" style={{width:`${previewProgress}%`,height:'100%',background:'#4ade80'}}/>
+    {preview && (
+      <Modal
+        title={preview.name}
+        onClose={() => { setPreview(null); setShowPreviewInfo(false); }}
+        wide
+        extraHeader={
+          <button
+            type="button"
+            className={`icon-button preview-info-toggle-btn ${showPreviewInfo ? 'active' : ''}`}
+            onClick={() => setShowPreviewInfo(prev => !prev)}
+            aria-label={showPreviewInfo ? t('Hide file details', 'ফাইলের বিবরণ লুকান') : t('Show file details', 'ফাইলের বিবরণ দেখুন')}
+            title={showPreviewInfo ? t('Hide file details', 'ফাইলের বিবরণ লুকান') : t('Show file details', 'ফাইলের বিবরণ দেখুন')}
+          >
+            <Info size={18} />
+          </button>
+        }
+      >
+        <div className={`viewer ${showPreviewInfo ? 'with-info' : 'media-only'}`}>
+          <div className="viewer-media">
+            {previewError ? (
+              <div className="preview-fallback"><Info size={34}/><p>{previewError}</p></div>
+            ) : !previewUrl ? (
+              safePreview(preview) === 'video' && previewPoster ? (
+                <div className="video-player-box" style={{position:'relative',width:'100%',display:'flex',justifyContent:'center',alignItems:'center',background:'#000',borderRadius:'8px',overflow:'hidden',minHeight:'180px'}}>
+                  <img src={previewPoster} alt={preview.name} style={{width:'100%',maxHeight:'100%',objectFit:'contain',opacity:0.65}}/>
+                  <div className="video-buffering-overlay" style={{position:'absolute',inset:0,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',background:'rgba(0,0,0,0.4)',color:'#fff',padding:'20px'}}>
+                    <LoaderCircle size={36} className="spin" style={{color:'#fff',marginBottom:'10px'}}/>
+                    <strong style={{fontSize:'14px',marginBottom:'6px'}}>{t('Buffering video from Telegram…','টেলিগ্রাম থেকে ভিডিও লোড হচ্ছে…')}</strong>
+                    {previewProgress !== null && (
+                      <>
+                        <div className="preview-progress-track" style={{width:'80%',maxWidth:'280px',height:'6px',background:'rgba(255,255,255,0.25)',borderRadius:'3px',overflow:'hidden',margin:'6px 0'}}>
+                          <div className="preview-progress-fill" style={{width:`${previewProgress}%`,height:'100%',background:'#4ade80'}}/>
+                        </div>
+                        <p style={{fontSize:'12px',color:'rgba(255,255,255,0.9)',margin:0}}>
+                          {previewBytes ? `${formatBytes(previewBytes.current)} / ${formatBytes(previewBytes.total)} (${previewProgress}%)` : `${previewProgress}%`}
+                        </p>
+                      </>
+                    )}
+                    {!previewProgress && <p style={{fontSize:'12px',color:'rgba(255,255,255,0.9)',margin:0}}>{preview.name} · {formatBytes(preview.bytes)}</p>}
+                  </div>
+                </div>
+              ) : (
+                <div className="preview-loading-card">
+                  <LoaderCircle size={32} className="spin"/>
+                  <strong>{t('Loading preview from Telegram…','টেলিগ্রাম থেকে প্রিভিউ লোড হচ্ছে…')}</strong>
+                  {previewProgress !== null && (
+                    <>
+                      <div className="preview-progress-track">
+                        <div className="preview-progress-fill" style={{width:`${previewProgress}%`}}/>
+                      </div>
+                      <p>{previewBytes ? `${formatBytes(previewBytes.current)} / ${formatBytes(previewBytes.total)} (${previewProgress}%)` : `${previewProgress}%`}</p>
+                    </>
+                  )}
+                  {!previewProgress && <p>{preview.name} · {formatBytes(preview.bytes)}</p>}
+                </div>
+              )
+            ) : safePreview(preview) === 'image' ? (
+              <img src={previewUrl} alt={preview.name}/>
+            ) : safePreview(preview) === 'video' ? (
+              <div className="video-player-box" style={{width:'100%',display:'flex',justifyContent:'center',alignItems:'center',background:'#000',borderRadius:'8px',overflow:'hidden',minHeight:'180px'}}>
+                <video
+                  key={previewUrl}
+                  src={previewUrl}
+                  controls
+                  playsInline
+                  autoPlay
+                  style={{maxWidth:'100%',maxHeight:'100%',display:'block',margin:'auto'}}
+                  onError={()=>{
+                    setPreviewError(t('This video codec cannot be played directly in this browser. Download the original to open it locally.','এই ভিডিও কোডেকটি ব্রাউজারে সরাসরি চালানো যাচ্ছে না। মূল ফাইলটি ডাউনলোড করে খুলুন।'));
+                  }}
+                />
+              </div>
+            ) : safePreview(preview) === 'audio' ? (
+              <div className="audio-preview"><Music2 size={55}/><audio src={previewUrl} controls onError={()=>setPreviewError(t('This audio format cannot be played here. Download the original.','এই অডিও ফরম্যাট এখানে চলবে না। মূল ফাইল ডাউনলোড করুন।'))}/></div>
+            ) : safePreview(preview) === 'pdf' ? (
+              <iframe src={previewUrl} title={preview.name} sandbox="" referrerPolicy="no-referrer"/>
+            ) : (
+              <div className="preview-fallback"><TypeIcon kind={preview.kind} size={48}/><h3>{t('Some things are best opened at home.','কিছু ফাইল নিজের অ্যাপে খোলাই ভালো।')}</h3><p>{t('A safe preview isn’t available for this format. Download the original to open it with your favorite app.','এই ফরম্যাটের নিরাপদ প্রিভিউ নেই। মূল ফাইল ডাউনলোড করে উপযুক্ত অ্যাপে খুলুন।')}</p></div>
+            )}
           </div>
-          <p style={{fontSize:'12px',color:'rgba(255,255,255,0.9)',margin:0}}>
-            {previewBytes?`${formatBytes(previewBytes.current)} / ${formatBytes(previewBytes.total)} (${previewProgress}%)`:`${previewProgress}%`}
-          </p>
-        </>}
-        {!previewProgress&&<p style={{fontSize:'12px',color:'rgba(255,255,255,0.9)',margin:0}}>{preview.name} · {formatBytes(preview.bytes)}</p>}
-      </div>
-    </div>
-  ):(
-    <div className="preview-loading-card">
-      <LoaderCircle size={32} className="spin"/>
-      <strong>{t('Loading preview from Telegram…','টেলিগ্রাম থেকে প্রিভিউ লোড হচ্ছে…')}</strong>
-      {previewProgress!==null&&<>
-        <div className="preview-progress-track">
-          <div className="preview-progress-fill" style={{width:`${previewProgress}%`}}/>
+
+          <div className="viewer-actions">
+            <button className="button primary" onClick={()=>download(preview)}>
+              <Download size={16}/>{t('Download original','মূল ফাইল ডাউনলোড')}
+            </button>
+            <button className={`button button-light ${preview.favorite?'favorited':''}`} onClick={()=>favorite(preview)}>
+              <Star size={16} fill={preview.favorite?'currentColor':'none'}/>
+              {preview.favorite ? t('Favorited','পছন্দে আছে') : t('Favorite','পছন্দে রাখুন')}
+            </button>
+            <button
+              type="button"
+              className={`button button-light preview-info-action-btn ${showPreviewInfo ? 'active' : ''}`}
+              onClick={() => setShowPreviewInfo(prev => !prev)}
+              aria-label={showPreviewInfo ? t('Hide file details', 'ফাইলের বিবরণ লুকান') : t('Show file details', 'ফাইলের বিবরণ দেখুন')}
+            >
+              <Info size={16} />
+              <span>{showPreviewInfo ? t('Hide info', 'বিবরণ লুকান') : t('Info', 'বিবরণ')}</span>
+            </button>
+          </div>
+
+          {showPreviewInfo && (
+            <div className="preview-info-accordion">
+              <dl className="file-details">
+                <div><dt>{t('Original filename','মূল ফাইলের নাম')}</dt><dd>{preview.originalName}</dd></div>
+                <div><dt>{t('Size','আকার')}</dt><dd>{formatBytes(preview.bytes)} <span>({preview.bytes.toLocaleString()} bytes)</span></dd></div>
+                <div><dt>{t('Added','যোগ হয়েছে')}</dt><dd>{formatDate(preview.createdAt)}</dd></div>
+                <div><dt>{t('Location','অবস্থান')}</dt><dd>{catalog.folders.find(folder=>folder.id===preview.folderId)?.name||t('My drive','আমার ড্রাইভ')}</dd></div>
+                <div><dt>{t('Source','উৎস')}</dt><dd>{preview.source==='server'?t('Your Telegram storage','আপনার টেলিগ্রাম স্টোরেজ'):preview.asset?t('Bundled demo sample','ডেমোর নমুনা'):t('This browser · not Telegram','এই ব্রাউজার · টেলিগ্রাম নয়')}</dd></div>
+                <div><dt>{t('File type','ফাইলের ধরন')}</dt><dd>{preview.mime}</dd></div>
+                {preview.sha256&&<div className="hash-detail"><dt>SHA-256</dt><dd>{preview.sha256}</dd></div>}
+              </dl>
+              <div className="tags-section">
+                <label htmlFor="tag-input"><Tag size={15}/>{t('Tags','ট্যাগ')}</label>
+                <div className="tag-list">
+                  {preview.tags.map(tag=><button key={tag} onClick={()=>{const next=preview.tags.filter(item=>item!==tag);updateTags(preview,next);}}>{tag}<X size={12}/></button>)}
+                  <input id="tag-input" value={tagValue} onChange={event=>setTagValue(event.target.value)} placeholder={t('Add a tag + Enter','ট্যাগ লিখে Enter দিন')} maxLength={40} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();const tag=tagValue.trim();if(tag&&!preview.tags.includes(tag)){const next=[...preview.tags,tag];updateTags(preview,next);}setTagValue('');}}}/>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
-        <p>{previewBytes?`${formatBytes(previewBytes.current)} / ${formatBytes(previewBytes.total)} (${previewProgress}%)`:`${previewProgress}%`}</p>
-      </>}
-      {!previewProgress&&<p>{preview.name} · {formatBytes(preview.bytes)}</p>}
-    </div>
-  )
-):safePreview(preview)==='image'?<img src={previewUrl} alt={preview.name}/>:safePreview(preview)==='video'?(
-  <div className="video-player-box" style={{width:'100%',display:'flex',justifyContent:'center',alignItems:'center',background:'#000',borderRadius:'8px',overflow:'hidden',minHeight:'220px'}}>
-    <video
-      key={previewUrl}
-      src={previewUrl}
-      controls
-      playsInline
-      autoPlay
-      style={{maxWidth:'100%',maxHeight:'65vh',display:'block',margin:'auto'}}
-      onError={()=>{
-        setPreviewError(t('This video codec cannot be played directly in this browser. Download the original to open it locally.','এই ভিডিও কোডেকটি ব্রাউজারে সরাসরি চালানো যাচ্ছে না। মূল ফাইলটি ডাউনলোড করে খুলুন।'));
-      }}
-    />
-  </div>
-):safePreview(preview)==='audio'?<div className="audio-preview"><Music2 size={55}/><audio src={previewUrl} controls onError={()=>setPreviewError(t('This audio format cannot be played here. Download the original.','এই অডিও ফরম্যাট এখানে চলবে না। মূল ফাইল ডাউনলোড করুন।'))}/></div>:safePreview(preview)==='pdf'?<iframe src={previewUrl} title={preview.name} sandbox="" referrerPolicy="no-referrer"/>:<div className="preview-fallback"><TypeIcon kind={preview.kind} size={48}/><h3>{t('Some things are best opened at home.','কিছু ফাইল নিজের অ্যাপে খোলাই ভালো।')}</h3><p>{t('A safe preview isn’t available for this format. Download the original to open it with your favorite app.','এই ফরম্যাটের নিরাপদ প্রিভিউ নেই। মূল ফাইল ডাউনলোড করে উপযুক্ত অ্যাপে খুলুন।')}</p></div>}</div><div className="viewer-actions"><button className="button primary" onClick={()=>download(preview)}><Download size={16}/>{t('Download original','মূল ফাইল ডাউনলোড')}</button><button className={`button button-light ${preview.favorite?'favorited':''}`} onClick={()=>favorite(preview)}><Star size={16} fill={preview.favorite?'currentColor':'none'}/>{preview.favorite?t('Favorited','পছন্দে আছে'):t('Favorite','পছন্দে রাখুন')}</button></div><dl className="file-details"><div><dt>{t('Original filename','মূল ফাইলের নাম')}</dt><dd>{preview.originalName}</dd></div><div><dt>{t('Size','আকার')}</dt><dd>{formatBytes(preview.bytes)} <span>({preview.bytes.toLocaleString()} bytes)</span></dd></div><div><dt>{t('Added','যোগ হয়েছে')}</dt><dd>{formatDate(preview.createdAt)}</dd></div><div><dt>{t('Location','অবস্থান')}</dt><dd>{catalog.folders.find(folder=>folder.id===preview.folderId)?.name||t('My drive','আমার ড্রাইভ')}</dd></div><div><dt>{t('Source','উৎস')}</dt><dd>{preview.source==='server'?t('Your Telegram storage','আপনার টেলিগ্রাম স্টোরেজ'):preview.asset?t('Bundled demo sample','ডেমোর নমুনা'):t('This browser · not Telegram','এই ব্রাউজার · টেলিগ্রাম নয়')}</dd></div><div><dt>{t('File type','ফাইলের ধরন')}</dt><dd>{preview.mime}</dd></div>{preview.sha256&&<div className="hash-detail"><dt>SHA-256</dt><dd>{preview.sha256}</dd></div>}</dl><div className="tags-section"><label htmlFor="tag-input"><Tag size={15}/>{t('Tags','ট্যাগ')}</label><div className="tag-list">{preview.tags.map(tag=><button key={tag} onClick={()=>{const next=preview.tags.filter(item=>item!==tag);updateTags(preview,next);}}>{tag}<X size={12}/></button>)}<input id="tag-input" value={tagValue} onChange={event=>setTagValue(event.target.value)} placeholder={t('Add a tag + Enter','ট্যাগ লিখে Enter দিন')} maxLength={40} onKeyDown={event=>{if(event.key==='Enter'){event.preventDefault();const tag=tagValue.trim();if(tag&&!preview.tags.includes(tag)){const next=[...preview.tags,tag];updateTags(preview,next);}setTagValue('');}}}/></div></div></div></Modal>}
+      </Modal>
+    )}
 
     {/* Mobile Bottom Navigation Bar - Custom Scooped Center Design */}
     <nav className="mobile-bottom-nav" aria-label={t('Mobile navigation', 'মোবাইল নেভিগেশন')}>
